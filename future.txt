@@ -1,6 +1,8 @@
 Работаем над сетью.
 Сторона хоста сделана, доделать внутри контейнера команды.
 
+зайло: /var/lib/zylo/*
+
 Шпаргалка:
 sudo ip link add name zylo{quantity} type bridge
 sudo ip addr add {IP}/{subIP} dev zylo{quantity}
