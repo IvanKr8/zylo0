@@ -41,10 +41,6 @@ func Up() error {
 	}
 	fmt.Println("Network zylo0 is ready")
 
-	//if err := system.DoubleFork(); err != nil {
-	//	return fmt.Errorf("error to create a background process: %v", err)
-	//}
-
 	pid := os.Getpid()
 	if err := os.WriteFile(pidFl, []byte(fmt.Sprintf("%d", pid)), 0644); err != nil {
 		return fmt.Errorf("error to create a file with daemon PID: %v", err)

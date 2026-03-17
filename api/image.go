@@ -2,6 +2,7 @@ package api
 
 import (
 	"archive/tar"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,8 +19,7 @@ import (
 const registryPrefix = "ghcr.io/ivankr8/"
 const defaultTag = ":1.0"
 
-func PullImage(imageName string) error {
-
+func PullImage(imageName string) (err error) {
 	fullRef := registryPrefix + imageName + defaultTag
 
 	ref, err := name.ParseReference(fullRef)
@@ -27,18 +27,44 @@ func PullImage(imageName string) error {
 		return err
 	}
 
-	img, err := remote.Image(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	finalDir := filepath.Join(global.ImgsPth, Sanitize(imageName))
+	tmpDir := finalDir + ".tmp"
+	lockFile := finalDir + ".lock"
+
+	// если образ уже есть — выходим
+	if _, err := os.Stat(finalDir); err == nil {
+		return nil
+	}
+
+	if _, err := os.Stat(lockFile); err == nil {
+		return fmt.Errorf("image is currently downloading")
+	}
+
+	if err = os.WriteFile(lockFile, []byte("1"), 0644); err != nil {
+		return err
+	}
+
+	defer func() {
+		os.Remove(lockFile)
+
+		if err != nil {
+			os.RemoveAll(tmpDir)
+		}
+	}()
+
+	if err = os.RemoveAll(tmpDir); err != nil {
+		return err
+	}
+
+	if err = os.MkdirAll(tmpDir, 0755); err != nil {
+		return err
+	}
+
+	img, err := remote.Image(
+		ref,
+		remote.WithAuthFromKeychain(authn.DefaultKeychain),
+	)
 	if err != nil {
-		return err
-	}
-
-	imageDir := filepath.Join(global.ImgsPth, Sanitize(imageName))
-
-	if err := os.RemoveAll(imageDir); err != nil {
-		return err
-	}
-
-	if err := os.MkdirAll(imageDir, 0755); err != nil {
 		return err
 	}
 
@@ -48,9 +74,13 @@ func PullImage(imageName string) error {
 	}
 
 	for _, layer := range layers {
-		if err := extractLayer(layer, imageDir); err != nil {
+		if err = extractLayer(layer, tmpDir); err != nil {
 			return err
 		}
+	}
+
+	if err = os.Rename(tmpDir, finalDir); err != nil {
+		return err
 	}
 
 	return nil
@@ -157,4 +187,9 @@ func ImageExists(imageName string) bool {
 	_, err := os.Stat(imagePath)
 
 	return err == nil
+}
+
+func ImageRemove(imageName string) error {
+	imageDir := filepath.Join(global.ImgsPth, Sanitize(imageName))
+	return os.RemoveAll(imageDir)
 }

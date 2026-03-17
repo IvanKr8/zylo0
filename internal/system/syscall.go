@@ -6,6 +6,7 @@ import (
 	"syscall"
 )
 
+// DoubleFork - not used now
 func DoubleFork() error {
 	pid, _, _ := syscall.Syscall(syscall.SYS_FORK, 0, 0, 0)
 	if pid == 0 {
