@@ -20,10 +20,7 @@ func readFile(path string) (*file, error) {
 	}
 
 	reader := bufio.NewReader(fl)
-
-	f := &file{Reader: reader, Closer: fl}
-
-	return f, nil
+	return &file{Reader: reader, Closer: fl}, nil
 }
 
 func (fl *file) getEnv() ([]string, error) {

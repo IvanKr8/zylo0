@@ -32,7 +32,6 @@ func List(tty string) error {
 		return nil
 	}
 
-	// Ещё одна пустая строка для гарантии
 	fmt.Fprintln(ttyFile, "")
 
 	w := tabwriter.NewWriter(ttyFile, 0, 0, 2, ' ', 0)

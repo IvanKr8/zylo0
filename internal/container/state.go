@@ -1,4 +1,4 @@
-package kernel
+package container
 
 import (
 	"encoding/json"
@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+
 	"zylo/global"
 )
 
@@ -40,6 +41,7 @@ func (c *Container) persistContainerState() error {
 	if err := writeJSON(); err != nil {
 		return err
 	}
+
 	if err := writePID(); err != nil {
 		return err
 	}

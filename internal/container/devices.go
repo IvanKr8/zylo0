@@ -1,4 +1,4 @@
-package kernel
+package container
 
 import (
 	"fmt"
@@ -67,7 +67,6 @@ func (d *DeviceManager) create(dev Device) error {
 	path := filepath.Join(d.rootfs, dev.Path)
 
 	if _, err := os.Stat(path); err == nil {
-		// Если устройство уже есть, просто меняем права
 		os.Chmod(path, os.FileMode(dev.Mode))
 		return nil
 	}

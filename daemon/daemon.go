@@ -2,10 +2,11 @@ package daemon
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strconv"
-	"zylo/internal/system"
+	"zylo/network"
 )
 
 var (
@@ -14,18 +15,39 @@ var (
 )
 
 type daemonAction struct {
-	Op  string `json:"op"`
-	TTY string `json:"tty"`
+	Op   string `json:"op,omitempty"`
+	TTY  string `json:"tty,omitempty"`
+	Path string `json:"path,omitempty"`
+	Hash string `json:"hash,omitempty"`
+	Type string `json:"type,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
 func Up() error {
-	if err := system.DoubleFork(); err != nil {
-		return fmt.Errorf("error to create a background process: %v", err)
+	nm, err := network.NewNetworkManager()
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	if err = network.InitZyloNat(); err != nil {
+		return err
+	}
+
+	if err = network.FlushZyloRules(); err != nil {
+		return err
+	}
+	if err := nm.EnsureDefaultNetwork(); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("Network zylo0 is ready")
+
+	//if err := system.DoubleFork(); err != nil {
+	//	return fmt.Errorf("error to create a background process: %v", err)
+	//}
 
 	pid := os.Getpid()
 	if err := os.WriteFile(pidFl, []byte(fmt.Sprintf("%d", pid)), 0644); err != nil {
-		return fmt.Errorf("не удалось записать PID: %v", err)
+		return fmt.Errorf("error to create a file with daemon PID: %v", err)
 	}
 
 	if err := daemon(); err != nil {

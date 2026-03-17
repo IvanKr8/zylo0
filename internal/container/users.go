@@ -1,4 +1,4 @@
-package kernel
+package container
 
 import (
 	"fmt"
@@ -45,13 +45,11 @@ func (u *UserManager) AddGroup(group Group) {
 }
 
 func (u *UserManager) WriteFiles() error {
-	// Создаем etc директорию если нет
 	etcDir := filepath.Join(u.rootfs, "etc")
 	if err := os.MkdirAll(etcDir, 0755); err != nil {
 		return fmt.Errorf("failed to create etc dir: %v", err)
 	}
 
-	// /etc/passwd
 	passwdPath := filepath.Join(etcDir, "passwd")
 	passwdFile, err := os.OpenFile(passwdPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -61,20 +59,12 @@ func (u *UserManager) WriteFiles() error {
 
 	for _, user := range u.users {
 		passwd := fmt.Sprintf("%s:%s:%d:%d:%s:%s:%s\n",
-			user.Name,
-			user.Password,
-			user.UID,
-			user.GID,
-			user.Name,
-			user.Home,
-			user.Shell,
-		)
+			user.Name, user.Password, user.UID, user.GID, user.Name, user.Home, user.Shell)
 		if _, err := passwdFile.WriteString(passwd); err != nil {
 			return err
 		}
 	}
 
-	// /etc/group
 	groupPath := filepath.Join(etcDir, "group")
 	groupFile, err := os.OpenFile(groupPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -83,11 +73,7 @@ func (u *UserManager) WriteFiles() error {
 	defer groupFile.Close()
 
 	for _, group := range u.groups {
-		groupLine := fmt.Sprintf("%s:x:%d:%s\n",
-			group.Name,
-			group.GID,
-			strings.Join(group.Users, ","),
-		)
+		groupLine := fmt.Sprintf("%s:x:%d:%s\n", group.Name, group.GID, strings.Join(group.Users, ","))
 		if _, err := groupFile.WriteString(groupLine); err != nil {
 			return err
 		}

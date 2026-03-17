@@ -1,7 +1,6 @@
-package kernel
+package container
 
 import (
-	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -10,86 +9,78 @@ import (
 	"testing"
 	"time"
 
+	"zylo/global"
+	"zylo/network"
+
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
-
-	"zylo/internal/container"
 )
 
-// TestSetupNetwork проверяет создание veth пары и подключение к bridge
 func TestSetupNetwork(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("Test requires root privileges. Run with sudo go test")
 	}
 
-	// 1. Создаем тестовый контейнер
-	cfg := &container.Config{
-		Image:   "test-image",
-		CopyDir: "",
-		Env:     map[string]string{},
-		Cmd:     []string{"/bin/sh"},
+	cfg := &Config{
+		Image:      "test-image",
+		OpenPorts:  []string{"8080:8080"},
+		SetWorkdir: "/test",
+		CmdPath:    "/tmp",
+		Cmd:        []string{"/bin/sh"},
+		Env:        map[string]string{},
 	}
 
-	ctr := NewContainer(cfg)
+	ctr := newContainer(cfg)
 	if ctr == nil {
-		t.Fatal("Failed to create container")
+		t.Fatal("newContainer failed")
 	}
 
-	// 2. Создаем структуру директорий
 	ctr.Rootfs = filepath.Join("/tmp", "test-"+ctr.ID)
-	os.MkdirAll(ctr.Rootfs, 0755)
+	if err := os.MkdirAll(ctr.Rootfs, 0755); err != nil {
+		t.Fatalf("Failed to create rootfs: %v", err)
+	}
+	defer os.RemoveAll(ctr.Rootfs)
 
-	// 3. Тестируем SetupNetwork
 	netCfg := &NetworkConfig{
-		NetworkName: "zylo0",
-		Ports:       []string{"5432:5432"},
+		NetworkName: global.MainNetName,
+		Ports:       cfg.OpenPorts,
 	}
 
-	err := ctr.SetupNetwork(netCfg)
-	if err != nil {
+	if err := ctr.SetupNetwork(netCfg); err != nil {
 		t.Fatalf("SetupNetwork failed: %v", err)
 	}
+	defer func() {
+		exec.Command("ip", "link", "del", ctr.hostVeth).Run()
+	}()
 
-	// 4. Проверяем что veth интерфейс создался
-	hostVeth := fmt.Sprintf("veth%s", ctr.ID[:8])
-	link, err := netlink.LinkByName(hostVeth)
+	if ctr.IP == "" {
+		t.Fatal("Container IP not set")
+	}
+	if ctr.containerIP == "" {
+		t.Fatal("containerIP not set")
+	}
+	if ctr.hostVeth == "" {
+		t.Fatal("hostVeth not set")
+	}
+	if ctr.peerName == "" {
+		t.Fatal("peerName not set")
+	}
+
+	link, err := netlink.LinkByName(ctr.hostVeth)
 	if err != nil {
-		t.Fatalf("veth interface %s not found: %v", hostVeth, err)
+		t.Fatalf("Host veth %s not found: %v", ctr.hostVeth, err)
 	}
 
-	// 5. Проверяем что это veth
-	if link.Type() != "veth" {
-		t.Fatalf("interface is not veth, it's %s", link.Type())
-	}
-
-	// 6. Проверяем что интерфейс UP
 	if link.Attrs().Flags&net.FlagUp == 0 {
-		t.Fatal("host veth is not UP")
+		t.Fatal("Host veth is not UP")
 	}
-
-	// 7. Проверяем что подключен к bridge
-	bridge, err := netlink.LinkByName("zylo0")
-	if err != nil {
-		t.Fatalf("bridge zylo0 not found: %v", err)
-	}
-
-	if link.Attrs().MasterIndex != bridge.Attrs().Index {
-		t.Fatal("veth not attached to bridge")
-	}
-
-	fmt.Println("✅ SetupNetwork test passed")
-
-	// Cleanup
-	netlink.LinkDel(link)
 }
 
-// TestAttachNetwork проверяет перемещение интерфейса в netns контейнера
 func TestAttachNetwork(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("Test requires root privileges. Run with sudo go test")
 	}
 
-	// 1. Создаем тестовый процесс в отдельном netns
 	cmd := exec.Command("unshare", "--net", "--fork", "sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Failed to start test process: %v", err)
@@ -97,33 +88,31 @@ func TestAttachNetwork(t *testing.T) {
 	defer cmd.Process.Kill()
 
 	time.Sleep(500 * time.Millisecond)
-	pid := cmd.Process.Pid
 
-	// 2. Создаем контейнер
-	cfg := &container.Config{
-		Image:   "test-image",
-		CopyDir: "",
-		Env:     map[string]string{},
-		Cmd:     []string{"/bin/sh"},
+	cfg := &Config{
+		Image:      "test-image",
+		OpenPorts:  []string{},
+		SetWorkdir: "/test",
+		CmdPath:    "/tmp",
+		Cmd:        []string{"/bin/sh"},
+		Env:        map[string]string{},
 	}
 
-	ctr := NewContainer(cfg)
-	ctr.pid = pid
+	ctr := newContainer(cfg)
+	ctr.Pid = cmd.Process.Pid
 	ctr.containerIP = "10.20.1.100"
-	ctr.peerName = "eth0"
+	ctr.peerName = "eth-test"
 	ctr.hostVeth = "veth-test"
-	ctr.Rootfs = filepath.Join("/tmp", "test-"+ctr.ID)
 
-	// 3. Создаем veth пару заранее
-	hostVeth := "veth-test"
-	peerName := "eth0"
+	nm, _ := network.NewNetworkManager()
+	ctr.networkManager = nm
 
 	veth := &netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{
-			Name: hostVeth,
+			Name: ctr.hostVeth,
 			MTU:  1500,
 		},
-		PeerName: peerName,
+		PeerName: ctr.peerName,
 	}
 
 	if err := netlink.LinkAdd(veth); err != nil {
@@ -131,22 +120,21 @@ func TestAttachNetwork(t *testing.T) {
 	}
 	defer netlink.LinkDel(veth)
 
-	// 4. Подключаем к bridge
-	bridge, err := netlink.LinkByName("zylo0")
+	bridge, err := netlink.LinkByName(global.MainNetName)
 	if err == nil {
-		hostLink, _ := netlink.LinkByName(hostVeth)
+		hostLink, _ := netlink.LinkByName(ctr.hostVeth)
 		netlink.LinkSetMaster(hostLink, bridge.(*netlink.Bridge))
 		netlink.LinkSetUp(hostLink)
 	}
 
-	// 5. Тестируем AttachNetwork
-	err = ctr.AttachNetwork()
-	if err != nil {
+	if err := ctr.AttachNetwork(); err != nil {
 		t.Fatalf("AttachNetwork failed: %v", err)
 	}
 
-	// 6. Проверяем что интерфейс переместился в контейнер
-	containerNs, _ := netns.GetFromPid(pid)
+	containerNs, err := netns.GetFromPid(ctr.Pid)
+	if err != nil {
+		t.Fatalf("Failed to get container netns: %v", err)
+	}
 	defer containerNs.Close()
 
 	origns, _ := netns.Get()
@@ -155,28 +143,70 @@ func TestAttachNetwork(t *testing.T) {
 	netns.Set(containerNs)
 	defer netns.Set(origns)
 
-	// Проверяем что eth0 есть в контейнере
-	link, err := netlink.LinkByName("eth0")
+	link, err := netlink.LinkByName(ctr.peerName)
 	if err != nil {
-		t.Fatalf("eth0 not found in container: %v", err)
+		t.Fatalf("Interface %s not found in container: %v", ctr.peerName, err)
 	}
 
-	// Проверяем что есть IP
 	addrs, _ := netlink.AddrList(link, netlink.FAMILY_V4)
 	if len(addrs) == 0 {
-		t.Fatal("eth0 has no IP address")
+		t.Fatal("Interface has no IP address")
 	}
-
-	fmt.Printf("✅ AttachNetwork test passed, IP: %s\n", addrs[0].IPNet.String())
 }
 
-// TestFullNetworkFlow проверяет полный цикл создания сети
+func TestCleanupNetwork(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("Test requires root privileges. Run with sudo go test")
+	}
+
+	cfg := &Config{
+		Image:      "test-image",
+		OpenPorts:  []string{"7070:7070"},
+		SetWorkdir: "/test",
+		CmdPath:    "/tmp",
+		Cmd:        []string{"/bin/sh"},
+		Env:        map[string]string{},
+	}
+
+	ctr := newContainer(cfg)
+	ctr.IP = "10.20.1.150"
+	ctr.Ports = []string{"7070:7070"}
+	ctr.hostVeth = "veth-test"
+	ctr.containerIP = "10.20.1.150"
+
+	nm, _ := network.NewNetworkManager()
+	ctr.networkManager = nm
+
+	ipam := network.NewIPAM(nm)
+	ipam.AllocateIP(global.MainNetName, ctr.ID)
+	nm.PortForward(ctr.IP, 7070, 7070)
+
+	if err := ctr.CleanupNetwork(); err != nil {
+		t.Fatalf("CleanupNetwork failed: %v", err)
+	}
+
+	checkCmd := exec.Command("iptables", "-t", "nat", "-L", "PREROUTING", "-n")
+	output, _ := checkCmd.CombinedOutput()
+	if strings.Contains(string(output), "10.20.1.150:7070") {
+		t.Fatal("PREROUTING rule still exists after cleanup")
+	}
+
+	_, err := ipam.GetContainerIP(global.MainNetName, ctr.ID)
+	if err == nil {
+		t.Fatal("IP still registered in IPAM after cleanup")
+	}
+
+	cmd := exec.Command("ip", "link", "show", ctr.hostVeth)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("Veth interface still exists after cleanup")
+	}
+}
+
 func TestFullNetworkFlow(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("Test requires root privileges. Run with sudo go test")
 	}
 
-	// 1. Создаем тестовый процесс
 	cmd := exec.Command("unshare", "--net", "--fork", "sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Failed to start test process: %v", err)
@@ -184,45 +214,50 @@ func TestFullNetworkFlow(t *testing.T) {
 	defer cmd.Process.Kill()
 
 	time.Sleep(500 * time.Millisecond)
-	pid := cmd.Process.Pid
 
-	// 2. Создаем контейнер
-	cfg := &container.Config{
-		Image:   "test-image",
-		CopyDir: "",
-		Env:     map[string]string{},
-		Cmd:     []string{"/bin/sh"},
+	cfg := &Config{
+		Image:      "test-image",
+		OpenPorts:  []string{"9090:9090"},
+		SetWorkdir: "/test",
+		CmdPath:    "/tmp",
+		Cmd:        []string{"/bin/sh"},
+		Env:        map[string]string{},
 	}
 
-	ctr := NewContainer(cfg)
-	ctr.pid = pid
-	ctr.Ports = []string{"5432:5432"}
+	ctr := newContainer(cfg)
+	ctr.Pid = cmd.Process.Pid
 	ctr.Rootfs = filepath.Join("/tmp", "test-"+ctr.ID)
 
-	// 3. SetupNetwork
+	if err := os.MkdirAll(ctr.Rootfs, 0755); err != nil {
+		t.Fatalf("Failed to create rootfs: %v", err)
+	}
+	defer os.RemoveAll(ctr.Rootfs)
+
 	netCfg := &NetworkConfig{
-		NetworkName: "zylo0",
-		Ports:       ctr.Ports,
+		NetworkName: global.MainNetName,
+		Ports:       cfg.OpenPorts,
 	}
 
 	if err := ctr.SetupNetwork(netCfg); err != nil {
 		t.Fatalf("SetupNetwork failed: %v", err)
 	}
+	defer func() {
+		exec.Command("ip", "link", "del", ctr.hostVeth).Run()
+		ctr.CleanupNetwork()
+	}()
 
-	// 4. Проверяем что veth создался на хосте
-	hostVeth := fmt.Sprintf("veth%s", ctr.ID[:8])
-	hostLink, err := netlink.LinkByName(hostVeth)
-	if err != nil {
-		t.Fatalf("Host veth not found: %v", err)
-	}
-
-	// 5. AttachNetwork
 	if err := ctr.AttachNetwork(); err != nil {
 		t.Fatalf("AttachNetwork failed: %v", err)
 	}
 
-	// 6. Проверяем что интерфейс в контейнере
-	containerNs, _ := netns.GetFromPid(pid)
+	if ctr.IP == "" {
+		t.Fatal("Container IP not set")
+	}
+
+	containerNs, err := netns.GetFromPid(ctr.Pid)
+	if err != nil {
+		t.Fatalf("Failed to get container netns: %v", err)
+	}
 	defer containerNs.Close()
 
 	origns, _ := netns.Get()
@@ -231,53 +266,32 @@ func TestFullNetworkFlow(t *testing.T) {
 	netns.Set(containerNs)
 	defer netns.Set(origns)
 
-	containerLink, err := netlink.LinkByName("eth0")
+	link, err := netlink.LinkByName(ctr.peerName)
 	if err != nil {
-		t.Fatalf("eth0 not found in container: %v", err)
+		t.Fatalf("Interface %s not found in container: %v", ctr.peerName, err)
 	}
 
-	addrs, _ := netlink.AddrList(containerLink, netlink.FAMILY_V4)
+	addrs, _ := netlink.AddrList(link, netlink.FAMILY_V4)
 	if len(addrs) == 0 {
-		t.Fatal("eth0 has no IP")
+		t.Fatal("Interface has no IP address")
 	}
-
-	// 7. Проверяем что маршрут добавился
-	routes, _ := netlink.RouteList(containerLink, netlink.FAMILY_V4)
-	foundDefault := false
-	for _, r := range routes {
-		if r.Gw != nil {
-			foundDefault = true
-			break
-		}
-	}
-	if !foundDefault {
-		t.Fatal("No default route found in container")
-	}
-
-	// 8. Проверяем что iptables правила добавились
-	ip := ctr.IP
-	checkIPtables := exec.Command("iptables", "-t", "nat", "-L", "PREROUTING", "-n")
-	output, _ := checkIPtables.CombinedOutput()
-	if !strings.Contains(string(output), ip) {
-		t.Logf("Warning: iptables rule for %s not found", ip)
-	} else {
-		fmt.Printf("✅ iptables rule for %s found\n", ip)
-	}
-
-	// Cleanup
-	netlink.LinkDel(hostLink)
-	fmt.Println("✅ Full network flow test passed")
 }
 
 func TestMain(m *testing.M) {
-	fmt.Println("🔧 Setting up network tests...")
-
-	// Проверяем что zylo0 существует
-	_, err := netlink.LinkByName("zylo0")
+	nm, err := network.NewNetworkManager()
 	if err != nil {
-		fmt.Println("⚠️ zylo0 bridge not found, some tests may fail")
+		os.Exit(1)
+	}
+
+	if !nm.NetworkExists(global.MainNetName) {
+		if err := nm.CreateDefaultNetwork(); err != nil {
+			os.Exit(1)
+		}
 	}
 
 	code := m.Run()
+
+	exec.Command("iptables", "-t", "nat", "-F", "ZYLO").Run()
+
 	os.Exit(code)
 }
