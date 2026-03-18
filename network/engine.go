@@ -198,7 +198,57 @@ func (nm *NetManager) CreateDefaultNetwork() error {
 	return nm.saveConfig(config)
 }
 
+func (nm *NetManager) setupNetworkIPTables(subnet, bridgeName string) error {
+
+	// 1️⃣ Включаем IP forwarding
+	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644); err != nil {
+		return fmt.Errorf("failed to enable ip_forward: %v", err)
+	}
+
+	// 2️⃣ MASQUERADE (NAT в интернет)
+	masqRule := []string{
+		"-s", subnet,
+		"!", "-o", global.MainNetName,
+		"-j", "MASQUERADE",
+	}
+
+	exists, _ := nm.ipt.Exists("nat", "POSTROUTING", masqRule...)
+	if !exists {
+		if err := nm.ipt.Append("nat", "POSTROUTING", masqRule...); err != nil {
+			return fmt.Errorf("failed to add MASQUERADE: %v", err)
+		}
+	}
+
+	// 3️⃣ FORWARD правила
+
+	// Разрешаем уже установленные соединения
+	established := []string{
+		"-m", "conntrack",
+		"--ctstate", "ESTABLISHED,RELATED",
+		"-j", "ACCEPT",
+	}
+	nm.ipt.Append("filter", "FORWARD", established...)
+
+	// Разрешаем контейнерам выход в интернет
+	out := []string{
+		"-s", subnet,
+		"-o", global.MainNetName,
+		"-j", "ACCEPT",
+	}
+	nm.ipt.Append("filter", "FORWARD", out...)
+
+	in := []string{
+		"-d", subnet,
+		"-i", global.MainNetName,
+		"-j", "ACCEPT",
+	}
+	nm.ipt.Append("filter", "FORWARD", in...)
+
+	return nil
+}
+
 func (nm *NetManager) setupBaseIPTables(subnet string) error {
+
 	masqRule := []string{"-s", subnet, "!", "-o", global.MainNetName, "-j", "MASQUERADE"}
 	exists, _ := nm.ipt.Exists("nat", "POSTROUTING", masqRule...)
 	if !exists {
@@ -208,6 +258,7 @@ func (nm *NetManager) setupBaseIPTables(subnet string) error {
 	}
 
 	forwardRules := [][]string{
+		{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
 		{"-i", global.MainNetName, "-o", global.MainNetName, "-j", "ACCEPT"},
 		{"-i", global.MainNetName, "!", "-o", global.MainNetName, "-j", "ACCEPT"},
 		{"!", "-i", global.MainNetName, "-o", global.MainNetName, "-j", "ACCEPT"},
@@ -249,14 +300,18 @@ func (nm *NetManager) ListNetworks() ([]*Net, error) {
 
 func (nm *NetManager) GetNetwork(name string) (*Net, error) {
 	path := filepath.Join(nm.networksDir, name+".json")
+
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("network %s not found: %v", name, err)
+		if os.IsNotExist(err) {
+			return nil, ErrNetworkNotFound
+		}
+		return nil, err
 	}
 
 	var config Net
 	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("failed to parse network config: %v", err)
+		return nil, err
 	}
 
 	return &config, nil

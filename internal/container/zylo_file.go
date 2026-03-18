@@ -79,6 +79,8 @@ func (containerCfg *container) parseLine(line string) error {
 		return setWorkdir(rawArgs, containerCfg)
 	case "COPY":
 		return setCopydir(rawArgs, containerCfg)
+	case "NETWORK":
+		return setNetwork(rawArgs, containerCfg)
 	case "EXECUTE":
 		return setCommands(rawArgs, containerCfg)
 	case "VOLUME":
@@ -192,6 +194,16 @@ func setCopydir(arg string, config *container) error {
 
 func setCommands(arg string, config *container) error {
 	config.commands = append(config.commands, arg)
+	return nil
+}
+
+func setNetwork(arg string, config *container) error {
+	if arg == global.MainNetName {
+		return fmt.Errorf("network %s is reserved", global.MainNetName)
+	}
+
+	config.cNetwork.name = arg
+
 	return nil
 }
 

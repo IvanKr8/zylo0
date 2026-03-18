@@ -1,6 +1,6 @@
 package global
 
-var (
+const (
 	ZyloFile    = "ZyloFile"
 	ZyPth       = "/var/lib/zylo"
 	CtrsPth     = "/var/lib/zylo/containers"
@@ -12,16 +12,5 @@ var (
 	CtrsCfgPth = "/var/run/zylo/containers"
 	VolCfgPth  = "/var/run/zylo/volumes"
 
-	BaseImage   = "ubuntu:rootfs"
 	MainNetName = "zylo0"
-
-	TTY string
-
-	ApiBaseUrl = "http://localhost:8080"
-	ApiVer     = "/api/v1"
-
-	ApiPing         = ApiVer + "/ping"
-	ApiVerifyImage  = ApiVer + "/verify-image"
-	ApiDownloadInfo = ApiVer + "/download-image"
-	ApiPullImage    = ApiVer + "/pull"
 )

@@ -31,6 +31,7 @@ type Container struct {
 	CopyDir        string            `json:"copy_dir,omitempty"`
 	Workdir        string            `json:"workdir,omitempty"`
 	Volumes        []Volume          `json:"volume,omitempty"`
+	Network        string            `json:"network,omitempty"`
 	Env            map[string]string `json:"env,omitempty"`
 	Cmd            []string          `json:"cmd,omitempty"`
 	CmdPath        string            `json:"cmd_path,omitempty"`
@@ -56,6 +57,7 @@ func newContainer(cfg *Config) *Container {
 		CopyDir: cfg.CopyDir,
 		Workdir: cfg.SetWorkdir,
 		Volumes: cfg.Volumes,
+		Network: cfg.Network,
 		Env:     cfg.Env,
 		Cmd:     cfg.Cmd,
 		Ports:   cfg.OpenPorts,

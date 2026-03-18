@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 	"zylo/global"
+	"zylo/network"
 )
 
 type Config struct {
@@ -79,7 +80,12 @@ func Up(p string, tty string) error {
 		ContainerInit()
 		return nil
 	}
-	
+
+	nm, err := network.NewNetworkManager()
+	if err != nil {
+		return err
+	}
+
 	cfg, err := loadConfig(p, tty)
 	if err != nil {
 		return err
@@ -96,6 +102,10 @@ func Up(p string, tty string) error {
 	}
 
 	if err := ensureImage(ttyFile, cfg); err != nil {
+		return err
+	}
+
+	if err := checkNetwork(nm, ttyFile, cfg); err != nil {
 		return err
 	}
 

@@ -29,6 +29,7 @@ func loadConfig(p, tty string) (*Config, error) {
 		OpenPorts:  c.ports,
 		Env:        c.envVars,
 		Volumes:    c.volumes,
+		Network:    c.cNetwork.name,
 		Cmd:        c.commands,
 		SetWorkdir: c.workdir,
 		UserTTY:    tty,

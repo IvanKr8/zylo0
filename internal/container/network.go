@@ -1,8 +1,10 @@
 package container
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -20,23 +22,66 @@ type NetworkConfig struct {
 	Ports       []string
 }
 
+func checkNetwork(nm *network.NetManager, ttyFile *os.File, cfg *Config) error {
+	if cfg.Network == "" {
+		return nil
+	}
+
+	if cfg.Network == global.MainNetName {
+		return fmt.Errorf("network %s is reserved", global.MainNetName)
+	}
+
+	_, err := nm.GetNetwork(cfg.Network)
+
+	if errors.Is(err, network.ErrNetworkNotFound) {
+		fmt.Fprintf(ttyFile, "Creating network %s...\n", cfg.Network)
+
+		netInfo, err := nm.CreateNetwork(cfg.Network)
+		if err != nil {
+			return fmt.Errorf("failed to create network: %v", err)
+		}
+
+		if err := nm.SetupIPTables(netInfo.Subnet); err != nil {
+			return fmt.Errorf("failed to setup NAT: %v", err)
+		}
+
+		fmt.Fprintf(ttyFile, "Network %s created\n", netInfo.Name)
+		return nil
+	}
+
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(ttyFile, "Network %s exists\n", cfg.Network)
+	return nil
+}
+
 func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
-	mainNet := global.MainNetName
 	nm, err := network.NewNetworkManager()
 	if err != nil {
 		return fmt.Errorf("failed to create network manager: %v", err)
 	}
 	c.networkManager = nm
 
-	if !nm.NetworkExists(mainNet) {
-		if err := nm.CreateDefaultNetwork(); err != nil {
-			return fmt.Errorf("failed to create default network: %v", err)
+	networkName := c.Network
+	if networkName == "" {
+		networkName = global.MainNetName
+	}
+
+	if !nm.NetworkExists(networkName) {
+		if networkName == global.MainNetName {
+			if err := nm.CreateDefaultNetwork(); err != nil {
+				return fmt.Errorf("failed to create default network: %v", err)
+			}
+		} else {
+			return fmt.Errorf("network %s does not exist", networkName)
 		}
 	}
 
-	bridge, err := netlink.LinkByName(mainNet)
+	bridge, err := netlink.LinkByName(networkName)
 	if err != nil {
-		return fmt.Errorf("bridge zylo0 not found: %v", err)
+		return fmt.Errorf("bridge %s not found: %v", networkName, err)
 	}
 
 	if bridge.Attrs().Flags&net.FlagUp == 0 {
@@ -46,41 +91,29 @@ func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
 	}
 
 	ipam := network.NewIPAM(nm)
-	containerIP, err := ipam.AllocateIP(mainNet, c.ID)
+	containerIP, err := ipam.AllocateIP(networkName, c.ID)
 	if err != nil {
 		return fmt.Errorf("failed to allocate IP: %v", err)
 	}
+
 	c.IP = containerIP
 	c.containerIP = containerIP
 
-	uniqueSuffix := c.ID[len(c.ID)-12:]
+	suffix := c.ID[len(c.ID)-8:]
 
-	if len(c.ID) >= 16 {
-		prefix := c.ID[:4]
-		suffix := c.ID[len(c.ID)-4:]
-		uniqueSuffix = prefix + suffix
-	}
-
-	hostVeth := fmt.Sprintf("veth-%s", uniqueSuffix)
-	peerName := fmt.Sprintf("eth-%s", uniqueSuffix)
-
-	if len(hostVeth) > 15 {
-		hostVeth = fmt.Sprintf("v%s", c.ID[len(c.ID)-10:])
-	}
-	if len(peerName) > 15 {
-		peerName = fmt.Sprintf("e%s", c.ID[len(c.ID)-10:])
-	}
+	hostVeth := fmt.Sprintf("v%s", suffix)
+	peerName := fmt.Sprintf("e%s", suffix)
 
 	exec.Command("ip", "link", "del", hostVeth).Run()
 	exec.Command("ip", "link", "del", peerName).Run()
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	out, err := exec.Command("ip", "link", "add", hostVeth, "type", "veth", "peer", "name", peerName).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create veth: %s", out)
 	}
 
-	out, err = exec.Command("ip", "link", "set", hostVeth, "master", global.MainNetName).CombinedOutput()
+	out, err = exec.Command("ip", "link", "set", hostVeth, "master", networkName).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to attach to bridge: %s", out)
 	}
@@ -90,20 +123,11 @@ func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
 		return fmt.Errorf("failed to set host veth up: %s", out)
 	}
 
-	time.Sleep(100 * time.Millisecond)
-	if out, err := exec.Command("bridge", "link", "show", hostVeth).CombinedOutput(); err != nil {
-		return fmt.Errorf("veth not attached to bridge: %s", out)
-	}
-
 	c.hostVeth = hostVeth
 	c.peerName = peerName
 
-	exec.Command("sysctl", "-w", "net.ipv4.conf.all.route_localnet=1").Run()
-
-	networkConfig, _ := nm.GetNetwork(mainNet)
-	if networkConfig != nil {
-		// gateway используется в PortForward для логов, но мы убрали логи
-		_ = networkConfig.Gateway
+	if _, err := nm.GetNetwork(networkName); err != nil {
+		return fmt.Errorf("failed to get network config: %v", err)
 	}
 
 	for _, port := range netCfg.Ports {
@@ -111,6 +135,7 @@ func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
 		if len(parts) != 2 {
 			continue
 		}
+
 		hostPort, _ := strconv.Atoi(parts[0])
 		containerPort, _ := strconv.Atoi(parts[1])
 
@@ -127,13 +152,28 @@ func (c *Container) AttachNetwork() error {
 		return fmt.Errorf("container process %d is dead: %v", c.Pid, err)
 	}
 
-	networkConfig, err := c.networkManager.GetNetwork(global.MainNetName)
+	if c.networkManager == nil {
+		return fmt.Errorf("network manager is not initialized")
+	}
+
+	networkName := c.Network
+	if networkName == "" {
+		networkName = global.MainNetName
+	}
+
+	networkConfig, err := c.networkManager.GetNetwork(networkName)
 	if err != nil {
 		return fmt.Errorf("failed to get network config: %v", err)
 	}
+
 	gateway := networkConfig.Gateway
 
-	out, err := exec.Command("ip", "link", "set", c.peerName, "netns", strconv.Itoa(c.Pid)).CombinedOutput()
+	out, err := exec.Command(
+		"ip", "link", "set",
+		c.peerName,
+		"netns",
+		strconv.Itoa(c.Pid),
+	).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to move interface to container: %s", out)
 	}
@@ -146,12 +186,20 @@ func (c *Container) AttachNetwork() error {
 		return nil
 	}
 
-	if err := nsenter("ip", "addr", "add", c.containerIP+"/16", "dev", c.peerName); err != nil {
+	_, ipNet, err := net.ParseCIDR(networkConfig.Subnet)
+	if err != nil {
+		return fmt.Errorf("invalid subnet in network config: %v", err)
+	}
+
+	maskSize, _ := ipNet.Mask.Size()
+	ipWithMask := fmt.Sprintf("%s/%d", c.containerIP, maskSize)
+
+	if err := nsenter("ip", "addr", "add", ipWithMask, "dev", c.peerName); err != nil {
 		return fmt.Errorf("failed to add IP: %v", err)
 	}
 
 	if err := nsenter("ip", "link", "set", c.peerName, "up"); err != nil {
-		return fmt.Errorf("failed to set eth0 up: %v", err)
+		return fmt.Errorf("failed to set eth up: %v", err)
 	}
 
 	if err := nsenter("ip", "link", "set", "lo", "up"); err != nil {
@@ -164,7 +212,7 @@ func (c *Container) AttachNetwork() error {
 
 	time.Sleep(100 * time.Millisecond)
 	if err := nsenter("ip", "link", "show", c.peerName); err != nil {
-		return fmt.Errorf("eth0 verification failed: %v", err)
+		return fmt.Errorf("eth verification failed: %v", err)
 	}
 
 	return nil

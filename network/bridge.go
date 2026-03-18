@@ -2,6 +2,7 @@ package network
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -10,7 +11,11 @@ import (
 	"strings"
 	"time"
 	"zylo/global"
+
+	"github.com/vishvananda/netlink"
 )
+
+var ErrNetworkNotFound = errors.New("network not found")
 
 func (nm *NetManager) findFreeSubnet() (string, string, error) {
 	used := make(map[string]bool)
@@ -81,7 +86,80 @@ func (nm *NetManager) findFreeSubnet() (string, string, error) {
 	return "", "", fmt.Errorf("no free subnet found in range 10.20.1.0/24 - 10.20.254.0/24")
 }
 
-func (nm *NetManager) setupIPTables(subnet string) error {
+func (nm *NetManager) CreateNetwork(name string) (*Net, error) {
+	if nm.NetworkExists(name) {
+		return nil, fmt.Errorf("network already exists")
+	}
+
+	subnet, gateway, err := nm.findFreeSubnet()
+	if err != nil {
+		return nil, err
+	}
+
+	bridge := &netlink.Bridge{
+		LinkAttrs: netlink.LinkAttrs{
+			Name: name,
+			MTU:  1500,
+		},
+	}
+
+	if err := netlink.LinkAdd(bridge); err != nil {
+		return nil, err
+	}
+
+	addr, _ := netlink.ParseAddr(gateway + "/24")
+	_ = netlink.AddrAdd(bridge, addr)
+
+	if err := netlink.LinkSetUp(bridge); err != nil {
+		return nil, err
+	}
+
+	mainBridge, err := netlink.LinkByName(global.MainNetName)
+	if err != nil {
+		return nil, fmt.Errorf("zylo0 not found")
+	}
+
+	veth := &netlink.Veth{
+		LinkAttrs: netlink.LinkAttrs{
+			Name: name + "-veth0",
+		},
+		PeerName: name + "-veth1",
+	}
+
+	if err := netlink.LinkAdd(veth); err != nil {
+		return nil, err
+	}
+
+	veth0, _ := netlink.LinkByName(name + "-veth0")
+	veth1, _ := netlink.LinkByName(name + "-veth1")
+
+	_ = netlink.LinkSetMaster(veth0, bridge)
+	_ = netlink.LinkSetMaster(veth1, mainBridge)
+
+	_ = netlink.LinkSetUp(veth0)
+	_ = netlink.LinkSetUp(veth1)
+
+	if err := nm.setupNetworkIPTables(subnet, name); err != nil {
+		return nil, fmt.Errorf("failed to setup iptables: %v", err)
+	}
+
+	config := &Net{
+		Name:       name,
+		ID:         generateID(),
+		Subnet:     subnet,
+		Gateway:    gateway,
+		Created:    time.Now(),
+		Containers: make(map[string]string),
+	}
+
+	if err := nm.saveConfig(config); err != nil {
+		return nil, err
+	}
+
+	return config, nil
+}
+
+func (nm *NetManager) SetupIPTables(subnet string) error {
 	err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
 	if err != nil {
 		return fmt.Errorf("could not setup IP forward: %v", err)
@@ -169,6 +247,25 @@ func (nm *NetManager) getAllNetworks() ([]*Net, error) {
 	}
 
 	return networks, nil
+}
+
+func GetNetwork(name string) (*Net, error) {
+	path := filepath.Join(global.NetPth, name+".json")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNetworkNotFound
+		}
+		return nil, err
+	}
+
+	var net Net
+	if err := json.Unmarshal(data, &net); err != nil {
+		return nil, err
+	}
+
+	return &net, nil
 }
 
 func (nm *NetManager) networkExists(name string) bool {
