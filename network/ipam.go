@@ -3,17 +3,14 @@ package network
 import (
 	"fmt"
 	"strings"
+	"zylo/hosts"
 )
-
-type IPAM struct {
-	nm *NetManager
-}
 
 func NewIPAM(nm *NetManager) *IPAM {
 	return &IPAM{nm: nm}
 }
 
-func (ipam *IPAM) AllocateIP(networkName, containerID string) (string, error) {
+func (ipam *IPAM) AllocateIP(networkName, containerID, containerName string) (string, error) {
 	config, err := ipam.nm.GetNetwork(networkName)
 	if err != nil {
 		return "", err
@@ -30,8 +27,8 @@ func (ipam *IPAM) AllocateIP(networkName, containerID string) (string, error) {
 		ip := fmt.Sprintf("%s.%d", base, i)
 		taken := false
 
-		for _, containerIP := range config.Containers {
-			if containerIP == ip {
+		for _, ctr := range config.Containers {
+			if ctr.IP == ip {
 				taken = true
 				break
 			}
@@ -39,12 +36,26 @@ func (ipam *IPAM) AllocateIP(networkName, containerID string) (string, error) {
 
 		if !taken {
 			if config.Containers == nil {
-				config.Containers = make(map[string]string)
+				config.Containers = make(map[string]ContainerNetInfo)
 			}
-			config.Containers[containerID] = ip
 
-			if err := ipam.nm.saveConfig(config); err != nil {
+			config.Containers[containerID] = ContainerNetInfo{
+				ID:   containerID,
+				Name: containerName,
+				IP:   ip,
+			}
+
+			if err := ipam.nm.SaveConfig(config); err != nil {
 				return "", fmt.Errorf("failed to save config: %v", err)
+			}
+
+			hostsMgr, err := hosts.NewHostsManager(networkName)
+			if err != nil {
+				fmt.Printf("Warning: failed to init hosts manager: %v\n", err)
+			} else {
+				if err := hostsMgr.AddContainer(ip, containerName); err != nil {
+					fmt.Printf("Warning: failed to add container to hosts: %v\n", err)
+				}
 			}
 
 			return ip, nil
@@ -60,12 +71,12 @@ func (ipam *IPAM) GetContainerIP(networkName, containerID string) (string, error
 		return "", err
 	}
 
-	ip, exists := config.Containers[containerID]
+	ctr, exists := config.Containers[containerID]
 	if !exists {
 		return "", fmt.Errorf("container %s not found in network %s", containerID, networkName)
 	}
 
-	return ip, nil
+	return ctr.IP, nil
 }
 
 func (ipam *IPAM) ReleaseIP(networkName, containerID string) error {
@@ -74,9 +85,24 @@ func (ipam *IPAM) ReleaseIP(networkName, containerID string) error {
 		return err
 	}
 
-	delete(config.Containers, containerID)
+	var containerInfo ContainerNetInfo
+	if ctr, ok := config.Containers[containerID]; ok {
+		containerInfo = ctr
+		delete(config.Containers, containerID)
 
-	return ipam.nm.saveConfig(config)
+		if containerInfo.Name != "" {
+			hostsMgr, err := hosts.NewHostsManager(networkName)
+			if err != nil {
+				fmt.Printf("Warning: failed to init hosts manager: %v\n", err)
+			} else {
+				if err := hostsMgr.RemoveContainer(containerInfo.IP, containerInfo.Name); err != nil {
+					fmt.Printf("Warning: failed to remove container from hosts: %v\n", err)
+				}
+			}
+		}
+	}
+
+	return ipam.nm.SaveConfig(config)
 }
 
 func (ipam *IPAM) GetGateway(networkName string) (string, error) {

@@ -75,6 +75,8 @@ func (containerCfg *container) parseLine(line string) error {
 	switch instruction {
 	case "USE_IMAGE":
 		return setImage(rawArgs, containerCfg)
+	case "NAME":
+		return setName(rawArgs, containerCfg)
 	case "SET_WORKDIR":
 		return setWorkdir(rawArgs, containerCfg)
 	case "COPY":
@@ -98,6 +100,11 @@ func (containerCfg *container) parseLine(line string) error {
 
 func setImage(arg string, config *container) error {
 	config.image = arg
+	return nil
+}
+
+func setName(arg string, config *container) error {
+	config.name = arg
 	return nil
 }
 

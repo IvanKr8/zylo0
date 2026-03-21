@@ -10,7 +10,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
 	"zylo/global"
 	"zylo/network"
 
@@ -41,7 +40,7 @@ func checkNetwork(nm *network.NetManager, ttyFile *os.File, cfg *Config) error {
 			return fmt.Errorf("failed to create network: %v", err)
 		}
 
-		if err := nm.SetupIPTables(netInfo.Subnet); err != nil {
+		if err := nm.SetupIPTables(); err != nil {
 			return fmt.Errorf("failed to setup NAT: %v", err)
 		}
 
@@ -58,26 +57,23 @@ func checkNetwork(nm *network.NetManager, ttyFile *os.File, cfg *Config) error {
 }
 
 func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
-	nm, err := network.NewNetworkManager()
-	if err != nil {
-		return fmt.Errorf("failed to create network manager: %v", err)
+	if c.networkManager == nil {
+		return fmt.Errorf("network manager is not initialized")
 	}
-	c.networkManager = nm
 
 	networkName := c.Network
 	if networkName == "" {
 		networkName = global.MainNetName
 	}
+	//
+	//netObj, err := c.networkManager.GetNetwork(networkName)
+	//if err != nil {
+	//	return fmt.Errorf("network %s does not exist: %v", networkName, err)
+	//}
 
-	if !nm.NetworkExists(networkName) {
-		if networkName == global.MainNetName {
-			if err := nm.CreateDefaultNetwork(); err != nil {
-				return fmt.Errorf("failed to create default network: %v", err)
-			}
-		} else {
-			return fmt.Errorf("network %s does not exist", networkName)
-		}
-	}
+	//if netObj.DNS == nil || !netObj.DNS.IsRunning() {
+	//	return fmt.Errorf("DNS not running for network %s", networkName)
+	//}
 
 	bridge, err := netlink.LinkByName(networkName)
 	if err != nil {
@@ -90,17 +86,15 @@ func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
 		}
 	}
 
-	ipam := network.NewIPAM(nm)
-	containerIP, err := ipam.AllocateIP(networkName, c.ID)
+	ipam := network.NewIPAM(c.networkManager)
+	containerIP, err := ipam.AllocateIP(networkName, c.ID, c.Name)
 	if err != nil {
 		return fmt.Errorf("failed to allocate IP: %v", err)
 	}
-
 	c.IP = containerIP
 	c.containerIP = containerIP
 
 	suffix := c.ID[len(c.ID)-8:]
-
 	hostVeth := fmt.Sprintf("v%s", suffix)
 	peerName := fmt.Sprintf("e%s", suffix)
 
@@ -110,12 +104,12 @@ func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
 
 	out, err := exec.Command("ip", "link", "add", hostVeth, "type", "veth", "peer", "name", peerName).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to create veth: %s", out)
+		return fmt.Errorf("failed to create veth pair: %s", out)
 	}
 
 	out, err = exec.Command("ip", "link", "set", hostVeth, "master", networkName).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to attach to bridge: %s", out)
+		return fmt.Errorf("failed to attach host veth to bridge: %s", out)
 	}
 
 	out, err = exec.Command("ip", "link", "set", hostVeth, "up").CombinedOutput()
@@ -126,20 +120,15 @@ func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
 	c.hostVeth = hostVeth
 	c.peerName = peerName
 
-	if _, err := nm.GetNetwork(networkName); err != nil {
-		return fmt.Errorf("failed to get network config: %v", err)
-	}
-
 	for _, port := range netCfg.Ports {
 		parts := strings.Split(port, ":")
 		if len(parts) != 2 {
 			continue
 		}
-
 		hostPort, _ := strconv.Atoi(parts[0])
 		containerPort, _ := strconv.Atoi(parts[1])
 
-		if err := nm.PortForward(containerIP, hostPort, containerPort); err != nil {
+		if err := c.networkManager.PortForward(containerIP, hostPort, containerPort); err != nil {
 			return fmt.Errorf("failed to forward port %s: %v", port, err)
 		}
 	}
@@ -164,6 +153,10 @@ func (c *Container) AttachNetwork() error {
 	networkConfig, err := c.networkManager.GetNetwork(networkName)
 	if err != nil {
 		return fmt.Errorf("failed to get network config: %v", err)
+	}
+
+	if c.containerIP == "" {
+		return fmt.Errorf("container IP not allocated")
 	}
 
 	gateway := networkConfig.Gateway

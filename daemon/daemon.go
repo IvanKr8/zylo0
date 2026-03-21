@@ -33,13 +33,21 @@ func Up() error {
 		return err
 	}
 
-	if err = network.FlushZyloRules(); err != nil {
-		return err
-	}
+	initCleanUp()
+
 	if err := nm.EnsureDefaultNetwork(); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Network zylo0 is ready")
+
+	if err := nm.RestoreNetworks(); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := network.SyncAllHosts(nm); err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("Networks are ready")
 
 	pid := os.Getpid()
 	if err := os.WriteFile(pidFl, []byte(fmt.Sprintf("%d", pid)), 0644); err != nil {

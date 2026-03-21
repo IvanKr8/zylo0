@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	Image      string
+	Name       string
 	OpenPorts  []string
 	CmdPath    string
 	UserTTY    string
@@ -97,35 +98,39 @@ func Up(p string, tty string) error {
 	}
 	defer ttyFile.Close()
 
-	if err := checkDiskSpace(ttyFile); err != nil {
+	if err = checkDiskSpace(ttyFile); err != nil {
 		return err
 	}
 
-	if err := ensureImage(ttyFile, cfg); err != nil {
+	if err = ensureImage(ttyFile, cfg); err != nil {
 		return err
 	}
 
-	if err := checkNetwork(nm, ttyFile, cfg); err != nil {
+	if err = checkNetwork(nm, ttyFile, cfg); err != nil {
 		return err
 	}
 
-	if err := checkPorts(cfg.OpenPorts); err != nil {
+	if err = checkPorts(cfg.OpenPorts); err != nil {
 		return err
 	}
 
-	if err := checkVolumes(cfg.Volumes); err != nil {
+	if err = checkVolumes(cfg.Volumes); err != nil {
 		return err
 	}
 
-	ctr, err := createAndSetupContainer(cfg)
+	ctr, err := createAndSetupContainer(nm, cfg)
 	if err != nil {
 		fmt.Fprintf(ttyFile, "Setup failed: %v\n", err)
 		return err
 	}
 
+	if err = checkName(ctr.Name, ctr.ID); err != nil {
+		return err
+	}
+
 	runContainer(ctr)
 
-	if err := waitForContainerStart(ctr, ttyFile); err != nil {
+	if err = waitForContainerStart(ctr, ttyFile); err != nil {
 		return err
 	}
 

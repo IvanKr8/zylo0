@@ -7,10 +7,11 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"zylo/global"
 )
 
 var (
-	registryPath = "/var/run/zylo/volumes/registry.json"
+	registryPath = fmt.Sprintf("%s/registry.json", global.VolCfgPth)
 	mu           sync.RWMutex
 )
 

@@ -9,8 +9,13 @@ const (
 	VolPth      = "/var/lib/zylo/volumes"
 	ManifestPth = "/var/lib/zylo/manifests"
 
-	CtrsCfgPth = "/var/run/zylo/containers"
-	VolCfgPth  = "/var/run/zylo/volumes"
+	CtrsCfgPth  = "/var/run/zylo/containers"
+	VolCfgPth   = "/var/run/zylo/volumes"
+	NameCfgPth  = "/var/run/zylo/names"
+	HostsCfgPth = "/var/run/zylo/hosts"
 
 	MainNetName = "zylo0"
+
+	DnsPort      = ":53"
+	DnsExtraPort = ":54"
 )

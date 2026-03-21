@@ -26,6 +26,7 @@ type ContainerDown struct {
 
 type Container struct {
 	ID             string            `json:"id,omitempty"`
+	Name           string            `json:"name,omitempty"`
 	Rootfs         string            `json:"rootfs,omitempty"`
 	Image          string            `json:"image,omitempty"`
 	CopyDir        string            `json:"copy_dir,omitempty"`
@@ -52,6 +53,7 @@ func newContainer(cfg *Config) *Container {
 	hash := identifiers.Hash()
 	return &Container{
 		ID:      hash,
+		Name:    cfg.Name,
 		Rootfs:  filepath.Join(global.CtrsPth, hash),
 		Image:   cfg.Image,
 		CopyDir: cfg.CopyDir,
@@ -86,6 +88,14 @@ func (c *Container) cleanup(logMgr *Manager) {
 			volume.MarkVolumeUnused(vol.Name, "", c.ID)
 		} else {
 			volume.MarkVolumeUnused("", vol.HostPath, c.ID)
+		}
+	}
+
+	if c.Name != "" {
+		if err := UnregisterName(c.Name); err != nil {
+			logMgr.Daemon("WARN", "Failed to unregister container name %s: %v", c.Name, err)
+		} else {
+			logMgr.Daemon("INFO", "Unregistered container name %s", c.Name)
 		}
 	}
 
@@ -300,7 +310,7 @@ func ps(tty string) error {
 	}
 
 	w := tabwriter.NewWriter(ttyFile, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tIMAGE\tVOLUMES\tCMD\tPORTS\tIP")
+	fmt.Fprintln(w, "NAME\tIMAGE\tVOLUMES\tCMD\tPORTS\tIP")
 
 	for _, c := range liveContainers {
 		volumes := ""
@@ -322,15 +332,19 @@ func ps(tty string) error {
 
 		ports := ""
 		if len(c.Ports) > 0 {
-			ports = c.Ports[0]
+			ports = strings.Join(c.Ports, ", ")
+		}
+
+		name := c.Name
+		if name == "" {
+			name = c.ID[:12]
 		}
 
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			c.ID, c.Image, volumes, cmd, ports, c.IP)
+			name, c.Image, volumes, cmd, ports, c.IP)
 	}
 
 	w.Flush()
-
 	fmt.Fprintln(ttyFile, "")
 
 	return nil
@@ -488,8 +502,23 @@ func down(downCfg ContainerDown) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	if err := c.CleanupNetwork(); err != nil {
+	for _, vol := range c.Volumes {
+		if vol.Name != "" {
+			volume.MarkVolumeUnused(vol.Name, "", c.ID)
+		} else {
+			volume.MarkVolumeUnused("", vol.HostPath, c.ID)
+		}
+	}
+
+	if err = c.CleanupNetwork(); err != nil {
 		fmt.Printf("⚠️ Warning: failed to cleanup network: %v\n", err)
+	}
+
+	if c.Name != "" {
+		err := UnregisterName(c.ID)
+		if err != nil {
+			fmt.Printf("⚠Warning: failed to unregister name %s: %v\n", c.Name, err)
+		}
 	}
 
 	if c.mountMgr != nil {
@@ -536,7 +565,7 @@ func (c *Container) CleanupNetwork() error {
 		containerPort, _ := strconv.Atoi(parts[1])
 
 		if c.networkManager != nil {
-			c.networkManager.RemovePortForward(c.IP, hostPort, containerPort)
+			network.RemovePortForward(strconv.Itoa(hostPort), c.IP, strconv.Itoa(containerPort))
 		} else {
 			network.RemovePortForward(parts[0], c.IP, parts[1])
 		}
@@ -623,6 +652,14 @@ func (c *Container) setup() error {
 	initScript := filepath.Join(mergedRoot, "container_init.sh")
 	if _, err := os.Stat(initScript); err == nil {
 		os.Chmod(initScript, 0755)
+	}
+
+	if err := c.addResolv(); err != nil {
+		return err
+	}
+
+	if err := c.addHosts(); err != nil {
+		return err
 	}
 
 	c.deviceMgr = NewDeviceManager(mergedRoot)
@@ -808,7 +845,6 @@ func (c *Container) run() error {
 		if ok && exitErr.ExitCode() == 143 {
 			logMgr.Output("Container stopped")
 		} else {
-			// Реальная ошибка
 			logMgr.Output("Container finished with error: %v", err)
 		}
 	} else {
