@@ -16,8 +16,10 @@ import (
 	"zylo/global"
 )
 
-const registryPrefix = "ghcr.io/ivankr8/"
-const defaultTag = ":1.0"
+const (
+	registryPrefix = "ghcr.io/ivankr8/"
+	defaultTag     = ":1.0"
+)
 
 func PullImage(imageName string) (err error) {
 	fullRef := registryPrefix + imageName + defaultTag
@@ -31,7 +33,6 @@ func PullImage(imageName string) (err error) {
 	tmpDir := finalDir + ".tmp"
 	lockFile := finalDir + ".lock"
 
-	// если образ уже есть — выходим
 	if _, err := os.Stat(finalDir); err == nil {
 		return nil
 	}
@@ -46,7 +47,6 @@ func PullImage(imageName string) (err error) {
 
 	defer func() {
 		os.Remove(lockFile)
-
 		if err != nil {
 			os.RemoveAll(tmpDir)
 		}
@@ -87,7 +87,6 @@ func PullImage(imageName string) (err error) {
 }
 
 func extractLayer(layer v1.Layer, dest string) error {
-
 	rc, err := layer.Uncompressed()
 	if err != nil {
 		return err
@@ -97,73 +96,54 @@ func extractLayer(layer v1.Layer, dest string) error {
 	tr := tar.NewReader(rc)
 
 	for {
-
 		h, err := tr.Next()
-
 		if err == io.EOF {
 			break
 		}
-
 		if err != nil {
 			return err
 		}
 
 		name := h.Name
-
 		if strings.Contains(name, "..") {
 			continue
 		}
 
 		target := filepath.Join(dest, name)
-
 		base := filepath.Base(name)
 
 		if strings.HasPrefix(base, ".wh.") {
-
 			remove := filepath.Join(filepath.Dir(target), strings.TrimPrefix(base, ".wh."))
-
 			os.RemoveAll(remove)
-
 			continue
 		}
 
 		switch h.Typeflag {
-
 		case tar.TypeDir:
-
 			if err := os.MkdirAll(target, os.FileMode(h.Mode)); err != nil {
 				return err
 			}
 
 		case tar.TypeReg:
-
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return err
 			}
-
 			f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR|os.O_TRUNC, os.FileMode(h.Mode))
 			if err != nil {
 				return err
 			}
-
 			_, err = io.Copy(f, tr)
-
 			f.Close()
-
 			if err != nil {
 				return err
 			}
 
 		case tar.TypeSymlink:
-
 			os.MkdirAll(filepath.Dir(target), 0755)
-
 			os.Symlink(h.Linkname, target)
 
 		case tar.TypeLink:
-
 			linkTarget := filepath.Join(dest, h.Linkname)
-
 			os.Link(linkTarget, target)
 		}
 	}
@@ -172,20 +152,14 @@ func extractLayer(layer v1.Layer, dest string) error {
 }
 
 func Sanitize(name string) string {
-
 	name = strings.ReplaceAll(name, ":", "_")
-
 	name = strings.ReplaceAll(name, "/", "_")
-
 	return name
 }
 
 func ImageExists(imageName string) bool {
-
 	imagePath := filepath.Join(global.ImgsPth, Sanitize(imageName))
-
 	_, err := os.Stat(imagePath)
-
 	return err == nil
 }
 
