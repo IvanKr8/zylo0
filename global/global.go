@@ -1,6 +1,7 @@
 package global
 
-var (
+const (
+	ZyloFile    = "ZyloFile"
 	ZyPth       = "/var/lib/zylo"
 	CtrsPth     = "/var/lib/zylo/containers"
 	ImgsPth     = "/var/lib/zylo/images"
@@ -8,7 +9,17 @@ var (
 	VolPth      = "/var/lib/zylo/volumes"
 	ManifestPth = "/var/lib/zylo/manifests"
 
-	BaseImage = "ubuntu:rootfs"
+	CtrsCfgPth  = "/var/run/zylo/containers"
+	VolCfgPth   = "/var/run/zylo/volumes"
+	NameCfgPth  = "/var/run/zylo/names"
+	HostsCfgPth = "/var/run/zylo/hosts"
 
-	TTY string
+	MainNetName = "zylo0"
+
+	DnsPort      = ":53"
+	DnsExtraPort = ":54"
+
+	SocketPath        = "/var/run/zylo.sock"
+	SocketNetworkType = "unix"
+	DaemonPIDPath     = "/var/run/zylod.pid"
 )

@@ -2,33 +2,60 @@ package daemon
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strconv"
-	"zylo/internal/system"
+	"zylo/global"
+	"zylo/network"
 )
 
 var (
-	pidFl      = "/var/run/zylod.pid"
-	SocketPath = "/var/run/zylo-socket.sock"
+	SocketPath = global.SocketPath
+	pidFl      = global.DaemonPIDPath
 )
 
 type daemonAction struct {
-	Op  string `json:"op"`
-	TTY string `json:"tty"`
+	Op   string `json:"op,omitempty"`
+	TTY  string `json:"tty,omitempty"`
+	Path string `json:"path,omitempty"`
+	Hash string `json:"hash,omitempty"`
+	Type string `json:"type,omitempty"`
+	Name string `json:"name,omitempty"`
 }
 
 func Up() error {
-	if err := system.DoubleFork(); err != nil {
-		return fmt.Errorf("error to create a background process: %v", err)
+	nm, err := network.NewNetworkManager()
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	if err = network.InitZyloNat(); err != nil {
+		return err
+	}
+
+	InitCleanUp()
+
+	if err := nm.EnsureDefaultNetwork(); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := nm.RestoreNetworks(); err != nil {
+		log.Fatal(err)
+	}
+
+	if err := network.SyncAllHosts(nm); err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("Networks are ready")
 
 	pid := os.Getpid()
 	if err := os.WriteFile(pidFl, []byte(fmt.Sprintf("%d", pid)), 0644); err != nil {
-		return fmt.Errorf("не удалось записать PID: %v", err)
+		return fmt.Errorf("error to create a file with daemon PID: %v", err)
 	}
 
-	if err := daemon(); err != nil {
+	if err := startServer(); err != nil {
 		return err
 	}
 
@@ -67,11 +94,11 @@ func Down() error {
 	return nil
 }
 
-func Status() (string, error) {
-	conn, err := net.Dial("unix", SocketPath)
+func Status() error {
+	conn, err := net.Dial(global.SocketNetworkType, SocketPath)
 	if err != nil {
 		fmt.Println("FAIL")
-		return "", fmt.Errorf("error dialing socket: %v", err)
+		return fmt.Errorf("error dialing socket: %v", err)
 	}
 	defer conn.Close()
 
@@ -79,22 +106,22 @@ func Status() (string, error) {
 	_, err = conn.Write([]byte(message))
 	if err != nil {
 		fmt.Println("FAIL")
-		return "", fmt.Errorf("error sending ping: %v", err)
+		return fmt.Errorf("error sending ping: %v", err)
 	}
 
 	buffer := make([]byte, 1024)
 	n, err := conn.Read(buffer)
 	if err != nil {
 		fmt.Println("FAIL")
-		return "", fmt.Errorf("error sending ping: %v", err)
+		return fmt.Errorf("error sending ping: %v", err)
 	}
 
 	response := string(buffer[:n])
 	if response == "ok" {
 		fmt.Println("OK")
-		return "ok", nil
+		return nil
 	}
 
 	fmt.Println("FAIL")
-	return "", fmt.Errorf("error sending status OK: response: %v", response)
+	return fmt.Errorf("error sending status OK: response: %v", response)
 }

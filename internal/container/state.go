@@ -1,4 +1,4 @@
-package kernel
+package container
 
 import (
 	"encoding/json"
@@ -40,6 +40,7 @@ func (c *Container) persistContainerState() error {
 	if err := writeJSON(); err != nil {
 		return err
 	}
+
 	if err := writePID(); err != nil {
 		return err
 	}

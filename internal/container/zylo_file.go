@@ -2,184 +2,238 @@ package container
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
-	"zylo/internal/global"
+	"zylo/volume"
+
+	"zylo/global"
 	"zylo/internal/identifiers"
 )
 
-// find locates a flops by its name starting from the root directory.
-// If the flops is not found, an error is returned.
-func findZyFile(fileName string) (string, error) {
-	var foundFile string
+func findZyFile(p string, fileName string) (string, error) {
+	path := filepath.Join(p, fileName)
 
-	// Define the starting directory for the search
-	startDir := "."
-
-	// Walk through the directory structure to search for the flops
-	err := filepath.Walk(startDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		// Check if the current item matches the specified flops name
-		if !info.IsDir() && info.Name() == fileName {
-			foundFile = path
-			// Stop further traversal once the flops is found
-			return filepath.SkipDir
-		}
-		return nil
-	})
-
-	// Return an error if the traversal process failed
+	info, err := os.Stat(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("no zylo files found")
+		}
 		return "", err
 	}
 
-	// Return an error if no matching flops was found
-	if foundFile == "" {
-		return "", fmt.Errorf("no zylo files found")
+	if info.IsDir() {
+		return "", fmt.Errorf("expected file but got directory")
 	}
 
-	// Return the path of the found flops
-	return foundFile, nil
+	return path, nil
 }
 
 func (containerCfg *container) parseZyFile(zyloFlPath string) error {
-	// Get the contents of ZyloFile.
 	content, err := ioutil.ReadFile(zyloFlPath)
 	if err != nil {
-		return fmt.Errorf("failed to read flops: %v", err)
+		return fmt.Errorf("failed to read ZyloFile: %v", err)
 	}
 
 	containerCfg.hash = identifiers.Hash()
+	containerCfg.envVars = make(map[string]string)
+	containerCfg.ports = []string{}
+	containerCfg.commands = []string{}
+	containerCfg.volumes = []Volume{}
 
 	scanner := bufio.NewScanner(strings.NewReader(string(content)))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		// Skip empty lines and lines starting with !!.
-		// Lines starting with !! comments in ZyloFile.
 		if line == "" || strings.HasPrefix(line, "!!") {
 			continue
 		}
 
 		if err = containerCfg.parseLine(line); err != nil {
-			return fmt.Errorf("failed to parse line: %v", err)
+			return fmt.Errorf("failed to parse line '%s': %v", line, err)
 		}
 	}
 
 	if err = scanner.Err(); err != nil {
-		return fmt.Errorf("failed to scan flops: %v", err)
+		return fmt.Errorf("failed to scan ZyloFile: %v", err)
 	}
 
 	return nil
 }
 
 func (containerCfg *container) parseLine(line string) error {
-	parts := strings.Fields(line)
-	if len(parts) < 2 {
-		return fmt.Errorf("failed to parse line: %v", line)
+	idx := strings.Index(line, " ")
+	if idx == -1 {
+		return fmt.Errorf("invalid instruction: %s", line)
 	}
 
-	switch parts[0] {
+	instruction := line[:idx]
+	rawArgs := strings.TrimSpace(line[idx+1:])
+
+	switch instruction {
 	case "USE_IMAGE":
-		return setImage(parts[1:], containerCfg)
+		return setImage(rawArgs, containerCfg)
+	case "NAME":
+		return setName(rawArgs, containerCfg)
 	case "SET_WORKDIR":
-		return setWorkdir(parts[1:], containerCfg)
+		return setWorkdir(rawArgs, containerCfg)
 	case "COPY":
-		return setCopydir(parts[1:], containerCfg)
+		return setCopydir(rawArgs, containerCfg)
+	case "NETWORK":
+		return setNetwork(rawArgs, containerCfg)
 	case "EXECUTE":
-		return setCommands(parts[1:], containerCfg)
+		return setCommands(rawArgs, containerCfg)
+	case "VOLUME":
+		return setVolume(rawArgs, containerCfg)
 	case "SET_ENV":
-		return setEnv(parts[1:], containerCfg)
+		return setEnv(rawArgs, containerCfg)
 	case "OPEN_PORT":
-		return setPort(parts[1:], containerCfg)
+		return setPort(rawArgs, containerCfg)
 	case "START_WITH":
-		return setStartCommand(parts[1:], containerCfg)
+		return setStartCommand(rawArgs, containerCfg)
 	default:
-		return fmt.Errorf("failed to parse line: %v", parts[0])
+		return fmt.Errorf("unknown instruction: %s", instruction)
 	}
 }
 
-func setImage(args []string, config *container) error {
-	if len(args) != 1 {
-		return fmt.Errorf("USE_IMAGE expects exactly one argument")
-	}
-	config.image = args[0]
-
+func setImage(arg string, config *container) error {
+	config.image = arg
 	return nil
 }
 
-func setWorkdir(args []string, config *container) error {
-	if len(args) != 1 {
-		return fmt.Errorf("SET_WORKDIR expects exactly one argument")
-	}
-
-	workdirSuffix := ""
-	if args[0] != "." {
-		workdirSuffix = args[0]
-	}
-
-	config.workdir = fmt.Sprintf("%s/%s/source%s", global.CtrsPth, config.hash, workdirSuffix)
-	config.rootfs = fmt.Sprintf("%s/%s", global.CtrsPth, config.hash)
-	fmt.Printf("Setting workdir: %s\n", config.workdir)
-
+func setName(arg string, config *container) error {
+	config.name = arg
 	return nil
 }
 
-func setCopydir(args []string, config *container) error {
-	if len(args) != 1 {
-		return fmt.Errorf("COPY expects format 'COPY <src>'")
-	}
+func setVolume(arg string, config *container) error {
+	if !strings.Contains(arg, ":") {
+		containerPath := arg
+		volName := identifiers.Hash()
+		hostPath := filepath.Join(global.VolPth, config.hash, volName)
 
-	cpDir := ""
-	if args[0] == "." {
-		var err error
-		cpDir, err = filepath.Abs(".")
-		if err != nil {
-			return fmt.Errorf("Error getting absolute path: %v", err)
+		volume.RegisterVolume(volName, hostPath)
+
+		if err := os.MkdirAll(hostPath, 0755); err != nil {
+			return fmt.Errorf("failed to create anonymous volume: %v", err)
 		}
+
+		config.volumes = append(config.volumes, Volume{
+			Name:          volName,
+			HostPath:      hostPath,
+			ContainerPath: containerPath,
+		})
+
+		return nil
+	}
+
+	parts := strings.SplitN(arg, ":", 2)
+	left := parts[0]
+	right := parts[1]
+
+	if strings.HasPrefix(left, "/") {
+		containerPath := left
+		hostPath := right
+
+		existing, _ := volume.FindVolume("", hostPath)
+		if existing == nil {
+			volume.RegisterVolume("", hostPath)
+		}
+
+		if err := os.MkdirAll(hostPath, 0755); err != nil {
+			return fmt.Errorf("failed to create host volume path: %v", err)
+		}
+
+		config.volumes = append(config.volumes, Volume{
+			HostPath:      hostPath,
+			ContainerPath: containerPath,
+		})
+
+		return nil
+	}
+
+	volName := left
+	containerPath := right
+	hostPath := filepath.Join(global.VolPth, volName)
+
+	existing, _ := volume.FindVolume(volName, "")
+	if existing == nil {
+		volume.RegisterVolume(volName, hostPath)
+	}
+
+	if err := os.MkdirAll(hostPath, 0755); err != nil {
+		return fmt.Errorf("failed to create named volume: %v", err)
+	}
+
+	config.volumes = append(config.volumes, Volume{
+		Name:          volName,
+		HostPath:      hostPath,
+		ContainerPath: containerPath,
+	})
+
+	return nil
+}
+
+func setWorkdir(arg string, config *container) error {
+	basePath := "/source"
+
+	if arg == "." || arg == "" {
+		config.workdir = basePath
 	} else {
-		cpDir = args[0]
+		trimmed := strings.TrimPrefix(arg, "/")
+		config.workdir = filepath.Join(basePath, trimmed)
 	}
-
-	config.copyDir = cpDir
 
 	return nil
 }
 
-func setCommands(args []string, config *container) error {
-	config.commands = append(config.commands, args...)
+func setCopydir(arg string, config *container) error {
+	if arg == "." {
+		config.copyDir = config.cmdPath
+		return nil
+	}
+
+	config.copyDir = fmt.Sprintf("%s%s", config.cmdPath, arg)
+	return nil
+}
+
+func setCommands(arg string, config *container) error {
+	config.commands = append(config.commands, arg)
+	return nil
+}
+
+func setNetwork(arg string, config *container) error {
+	if arg == global.MainNetName {
+		return fmt.Errorf("network %s is reserved", global.MainNetName)
+	}
+
+	config.cNetwork.name = arg
 
 	return nil
 }
 
-func setEnv(args []string, config *container) error {
-	if len(args) != 1 || !strings.Contains(args[0], "=") {
-		return fmt.Errorf("SET_ENV expects format 'SET_ENV VAR=value'")
+func setEnv(arg string, config *container) error {
+	parts := strings.SplitN(arg, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("SET_ENV expects format KEY:value")
 	}
-	parts := strings.SplitN(args[0], "=", 2)
+
 	config.envVars[parts[0]] = parts[1]
-
 	return nil
 }
 
-func setPort(args []string, config *container) error {
-	if len(args) != 1 {
-		return fmt.Errorf("OPEN_PORT expects exactly one argument")
-	}
-	config.ports = append(config.ports, args[0])
-
+func setPort(arg string, config *container) error {
+	config.ports = append(config.ports, arg)
 	return nil
 }
 
-func setStartCommand(args []string, config *container) error {
-	if len(args) != 1 {
-		return fmt.Errorf("START_WITH expects exactly one argument")
+func setStartCommand(arg string, config *container) error {
+	var cmd []string
+	if err := json.Unmarshal([]byte(arg), &cmd); err != nil {
+		return fmt.Errorf("START_WITH must be JSON array: %v", err)
 	}
-	config.entrypoint = args[0]
-
+	config.commands = cmd
 	return nil
 }

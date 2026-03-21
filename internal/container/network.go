@@ -1,8 +1,10 @@
-package kernel
+package container
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -19,133 +21,147 @@ type NetworkConfig struct {
 	Ports       []string
 }
 
-func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
-	fmt.Println("\n🔧 Setting up network...")
-
-	mainNet := global.MainNetName
-
-	nm, err := network.NewNetworkManager()
-	if err != nil {
-		return fmt.Errorf("failed to create network manager: %v", err)
+func checkNetwork(nm *network.NetManager, ttyFile *os.File, cfg *Config) error {
+	if cfg.Network == "" {
+		return nil
 	}
-	c.networkManager = nm
 
-	if !nm.NetworkExists(mainNet) {
-		fmt.Println("   Creating zylo0 network...")
-		if err := nm.CreateDefaultNetwork(); err != nil {
-			return fmt.Errorf("failed to create default network: %v", err)
+	if cfg.Network == global.MainNetName {
+		return fmt.Errorf("network %s is reserved", global.MainNetName)
+	}
+
+	_, err := nm.GetNetwork(cfg.Network)
+
+	if errors.Is(err, network.ErrNetworkNotFound) {
+		fmt.Fprintf(ttyFile, "Creating network %s...\n", cfg.Network)
+
+		netInfo, err := nm.CreateNetwork(cfg.Network)
+		if err != nil {
+			return fmt.Errorf("failed to create network: %v", err)
 		}
+
+		if err := nm.SetupIPTables(); err != nil {
+			return fmt.Errorf("failed to setup NAT: %v", err)
+		}
+
+		fmt.Fprintf(ttyFile, "Network %s created\n", netInfo.Name)
+		return nil
 	}
 
-	bridge, err := netlink.LinkByName(mainNet)
 	if err != nil {
-		return fmt.Errorf("bridge zylo0 not found: %v", err)
+		return err
 	}
+
+	fmt.Fprintf(ttyFile, "Network %s exists\n", cfg.Network)
+	return nil
+}
+
+func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
+	if c.NetworkManager == nil {
+		return fmt.Errorf("network manager is not initialized")
+	}
+
+	networkName := c.Network
+	if networkName == "" {
+		networkName = global.MainNetName
+	}
+
+	bridge, err := netlink.LinkByName(networkName)
+	if err != nil {
+		return fmt.Errorf("bridge %s not found: %v", networkName, err)
+	}
+
 	if bridge.Attrs().Flags&net.FlagUp == 0 {
 		if err := netlink.LinkSetUp(bridge); err != nil {
 			return fmt.Errorf("failed to set bridge up: %v", err)
 		}
 	}
-	fmt.Println("   ✅ Bridge zylo0 is UP")
 
-	ipam := network.NewIPAM(nm)
-	containerIP, err := ipam.AllocateIP(mainNet, c.ID)
+	ipam := network.NewIPAM(c.NetworkManager)
+	containerIP, err := ipam.AllocateIP(networkName, c.ID, c.Name)
 	if err != nil {
 		return fmt.Errorf("failed to allocate IP: %v", err)
 	}
 	c.IP = containerIP
-	c.containerIP = containerIP
-	fmt.Printf("   ✅ Allocated IP: %s\n", containerIP)
+	c.ContainerIP = containerIP
 
-	hostVeth := fmt.Sprintf("veth-%s", c.ID[:8])
-	peerName := fmt.Sprintf("eth-%s", c.ID[:8])
+	suffix := c.ID[len(c.ID)-8:]
+	hostVeth := fmt.Sprintf("v%s", suffix)
+	peerName := fmt.Sprintf("e%s", suffix)
 
-	// Удаляем старые интерфейсы если есть
 	exec.Command("ip", "link", "del", hostVeth).Run()
 	exec.Command("ip", "link", "del", peerName).Run()
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
-	// Создаём veth пару
-	fmt.Printf("   Creating veth pair: %s <-> %s\n", hostVeth, peerName)
 	out, err := exec.Command("ip", "link", "add", hostVeth, "type", "veth", "peer", "name", peerName).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to create veth: %s", out)
+		return fmt.Errorf("failed to create veth pair: %s", out)
 	}
-	fmt.Println("   ✅ veth pair created")
 
-	// Подключаем к bridge
-	out, err = exec.Command("ip", "link", "set", hostVeth, "master", "zylo0").CombinedOutput()
+	out, err = exec.Command("ip", "link", "set", hostVeth, "master", networkName).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to attach to bridge: %s", out)
+		return fmt.Errorf("failed to attach host veth to bridge: %s", out)
 	}
-	fmt.Println("   ✅ Attached to bridge")
 
-	// Поднимаем интерфейс на хосте
 	out, err = exec.Command("ip", "link", "set", hostVeth, "up").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to set host veth up: %s", out)
 	}
-	fmt.Println("   ✅ Host veth is UP")
 
-	// Проверяем что интерфейс действительно в bridge
-	time.Sleep(100 * time.Millisecond)
-	if out, err := exec.Command("bridge", "link", "show", hostVeth).CombinedOutput(); err != nil {
-		return fmt.Errorf("veth not attached to bridge: %s", out)
-	}
-	fmt.Println("   ✅ Verified bridge attachment")
-
-	c.hostVeth = hostVeth
-	c.peerName = peerName
-
-	// Включение маршрутизации localhost
-	exec.Command("sysctl", "-w", "net.ipv4.conf.all.route_localnet=1").Run()
-	fmt.Println("   ✅ route_localnet enabled")
+	c.HostVeth = hostVeth
+	c.PeerName = peerName
 
 	for _, port := range netCfg.Ports {
 		parts := strings.Split(port, ":")
 		if len(parts) != 2 {
-			fmt.Printf("   ⚠️ Invalid port format: %s\n", port)
 			continue
 		}
 		hostPort, _ := strconv.Atoi(parts[0])
 		containerPort, _ := strconv.Atoi(parts[1])
 
-		fmt.Printf("   Forwarding port %d -> %d\n", hostPort, containerPort)
-
-		if err := nm.PortForward(containerIP, hostPort, containerPort); err != nil {
+		if err := c.NetworkManager.PortForward(containerIP, hostPort, containerPort); err != nil {
 			return fmt.Errorf("failed to forward port %s: %v", port, err)
 		}
-
-		// Правило для localhost (OUTPUT цепочка)
-		exec.Command("iptables", "-t", "nat", "-A", "OUTPUT",
-			"-p", "tcp", "--dport", strconv.Itoa(hostPort),
-			"-j", "DNAT", "--to-destination", containerIP+":"+strconv.Itoa(containerPort)).Run()
-
-		// MASQUERADE для ответных пакетов
-		exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING",
-			"-d", containerIP, "-p", "tcp", "--dport", strconv.Itoa(containerPort),
-			"-j", "MASQUERADE").Run()
 	}
-	fmt.Println("   ✅ Port forwarding configured")
+
 	return nil
 }
 
 func (c *Container) AttachNetwork() error {
-	fmt.Println("\n🔧 Attaching network to container...")
-
 	if err := syscall.Kill(c.Pid, 0); err != nil {
 		return fmt.Errorf("container process %d is dead: %v", c.Pid, err)
 	}
-	fmt.Printf("   ✅ Container process %d is alive\n", c.Pid)
 
-	// Перемещаем eth0 в контейнер
-	out, err := exec.Command("ip", "link", "set", c.peerName, "netns", strconv.Itoa(c.Pid)).CombinedOutput()
+	if c.NetworkManager == nil {
+		return fmt.Errorf("network manager is not initialized")
+	}
+
+	networkName := c.Network
+	if networkName == "" {
+		networkName = global.MainNetName
+	}
+
+	networkConfig, err := c.NetworkManager.GetNetwork(networkName)
+	if err != nil {
+		return fmt.Errorf("failed to get network config: %v", err)
+	}
+
+	if c.ContainerIP == "" {
+		return fmt.Errorf("container IP not allocated")
+	}
+
+	gateway := networkConfig.Gateway
+
+	out, err := exec.Command(
+		"ip", "link", "set",
+		c.PeerName,
+		"netns",
+		strconv.Itoa(c.Pid),
+	).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to move interface to container: %s", out)
 	}
-	fmt.Println("   ✅ Moved eth0 to container")
 
-	// Функция для выполнения команд внутри контейнера
 	nsenter := func(cmd ...string) error {
 		args := append([]string{"-t", strconv.Itoa(c.Pid), "-n"}, cmd...)
 		if out, err := exec.Command("nsenter", args...).CombinedOutput(); err != nil {
@@ -154,34 +170,73 @@ func (c *Container) AttachNetwork() error {
 		return nil
 	}
 
-	// Назначаем IP
-	if err := nsenter("ip", "addr", "add", c.containerIP+"/16", "dev", c.peerName); err != nil {
+	_, ipNet, err := net.ParseCIDR(networkConfig.Subnet)
+	if err != nil {
+		return fmt.Errorf("invalid subnet in network config: %v", err)
+	}
+
+	maskSize, _ := ipNet.Mask.Size()
+	ipWithMask := fmt.Sprintf("%s/%d", c.ContainerIP, maskSize)
+
+	if err := nsenter("ip", "addr", "add", ipWithMask, "dev", c.PeerName); err != nil {
 		return fmt.Errorf("failed to add IP: %v", err)
 	}
-	fmt.Printf("   ✅ Added IP %s to eth0\n", c.containerIP)
 
-	// Поднимаем интерфейсы
-	if err := nsenter("ip", "link", "set", c.peerName, "up"); err != nil {
-		return fmt.Errorf("failed to set eth0 up: %v", err)
+	if err := nsenter("ip", "link", "set", c.PeerName, "up"); err != nil {
+		return fmt.Errorf("failed to set eth up: %v", err)
 	}
-	fmt.Println("   ✅ eth0 is UP")
 
 	if err := nsenter("ip", "link", "set", "lo", "up"); err != nil {
 		return fmt.Errorf("failed to set lo up: %v", err)
 	}
-	fmt.Println("   ✅ Loopback is UP")
 
-	// Добавляем маршрут по умолчанию
-	if err := nsenter("ip", "route", "add", "default", "via", "10.20.1.1"); err != nil {
+	if err := nsenter("ip", "route", "add", "default", "via", gateway); err != nil {
 		return fmt.Errorf("failed to add default route: %v", err)
 	}
-	fmt.Println("   ✅ Default route added")
 
-	// Проверяем что интерфейс действительно UP
 	time.Sleep(100 * time.Millisecond)
-	if err := nsenter("ip", "link", "show", c.peerName); err != nil {
-		return fmt.Errorf("eth0 verification failed: %v", err)
+	if err := nsenter("ip", "link", "show", c.PeerName); err != nil {
+		return fmt.Errorf("eth verification failed: %v", err)
 	}
-	fmt.Println("   ✅ Network attached successfully")
+
+	return nil
+}
+
+func (c *Container) CleanupNetwork() error {
+	if c.IP == "" {
+		return nil
+	}
+
+	if c.NetworkManager == nil {
+		nm, err := network.NewNetworkManager()
+		if err == nil {
+			c.NetworkManager = nm
+		}
+	}
+
+	if c.NetworkManager != nil {
+		ipam := network.NewIPAM(c.NetworkManager)
+		ipam.ReleaseIP(global.MainNetName, c.ID)
+	}
+
+	for _, port := range c.Ports {
+		parts := strings.Split(port, ":")
+		if len(parts) != 2 {
+			continue
+		}
+		hostPort, _ := strconv.Atoi(parts[0])
+		containerPort, _ := strconv.Atoi(parts[1])
+
+		if c.NetworkManager != nil {
+			network.RemovePortForward(strconv.Itoa(hostPort), c.IP, strconv.Itoa(containerPort))
+		} else {
+			network.RemovePortForward(parts[0], c.IP, parts[1])
+		}
+	}
+
+	if c.HostVeth != "" {
+		exec.Command("ip", "link", "del", c.HostVeth).Run()
+	}
+
 	return nil
 }
