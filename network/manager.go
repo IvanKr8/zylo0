@@ -140,10 +140,10 @@ func (nm *NetManager) findFreeSubnet() (string, string, error) {
 	}
 
 	for i := MIN_SUBNET; i <= MAX_SUBNET; i++ {
-		subnet := fmt.Sprintf("10.20.%d.0/24", i)
+		subnet := fmt.Sprintf("%s.%d.0/24", BASE_IP, i)
 
 		if !used[subnet] {
-			gateway := fmt.Sprintf("10.20.%d.1", i)
+			gateway := fmt.Sprintf("%s.%d.1", BASE_IP, i)
 			return subnet, gateway, nil
 		}
 	}

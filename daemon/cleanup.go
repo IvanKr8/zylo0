@@ -10,12 +10,12 @@ import (
 	"syscall"
 	"time"
 	"zylo/global"
-	"zylo/internal/container"
+	namee "zylo/name"
 	"zylo/network"
 	"zylo/volume"
 )
 
-func initCleanUp() {
+func InitCleanUp() {
 	cleanRuntimeContainers()
 	cleanLibContainers()
 	cleanOrphanedMounts()
@@ -126,7 +126,7 @@ func cleanContainerResources(hash string) {
 		volume.MarkVolumeUnused(v.Name, v.Path, hash)
 	}
 
-	container.UnregisterName(hash)
+	namee.UnregisterName(hash)
 }
 
 func unmountAll(path string) {

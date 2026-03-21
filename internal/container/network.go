@@ -57,7 +57,7 @@ func checkNetwork(nm *network.NetManager, ttyFile *os.File, cfg *Config) error {
 }
 
 func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
-	if c.networkManager == nil {
+	if c.NetworkManager == nil {
 		return fmt.Errorf("network manager is not initialized")
 	}
 
@@ -65,15 +65,6 @@ func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
 	if networkName == "" {
 		networkName = global.MainNetName
 	}
-	//
-	//netObj, err := c.networkManager.GetNetwork(networkName)
-	//if err != nil {
-	//	return fmt.Errorf("network %s does not exist: %v", networkName, err)
-	//}
-
-	//if netObj.DNS == nil || !netObj.DNS.IsRunning() {
-	//	return fmt.Errorf("DNS not running for network %s", networkName)
-	//}
 
 	bridge, err := netlink.LinkByName(networkName)
 	if err != nil {
@@ -86,13 +77,13 @@ func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
 		}
 	}
 
-	ipam := network.NewIPAM(c.networkManager)
+	ipam := network.NewIPAM(c.NetworkManager)
 	containerIP, err := ipam.AllocateIP(networkName, c.ID, c.Name)
 	if err != nil {
 		return fmt.Errorf("failed to allocate IP: %v", err)
 	}
 	c.IP = containerIP
-	c.containerIP = containerIP
+	c.ContainerIP = containerIP
 
 	suffix := c.ID[len(c.ID)-8:]
 	hostVeth := fmt.Sprintf("v%s", suffix)
@@ -117,8 +108,8 @@ func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
 		return fmt.Errorf("failed to set host veth up: %s", out)
 	}
 
-	c.hostVeth = hostVeth
-	c.peerName = peerName
+	c.HostVeth = hostVeth
+	c.PeerName = peerName
 
 	for _, port := range netCfg.Ports {
 		parts := strings.Split(port, ":")
@@ -128,7 +119,7 @@ func (c *Container) SetupNetwork(netCfg *NetworkConfig) error {
 		hostPort, _ := strconv.Atoi(parts[0])
 		containerPort, _ := strconv.Atoi(parts[1])
 
-		if err := c.networkManager.PortForward(containerIP, hostPort, containerPort); err != nil {
+		if err := c.NetworkManager.PortForward(containerIP, hostPort, containerPort); err != nil {
 			return fmt.Errorf("failed to forward port %s: %v", port, err)
 		}
 	}
@@ -141,7 +132,7 @@ func (c *Container) AttachNetwork() error {
 		return fmt.Errorf("container process %d is dead: %v", c.Pid, err)
 	}
 
-	if c.networkManager == nil {
+	if c.NetworkManager == nil {
 		return fmt.Errorf("network manager is not initialized")
 	}
 
@@ -150,12 +141,12 @@ func (c *Container) AttachNetwork() error {
 		networkName = global.MainNetName
 	}
 
-	networkConfig, err := c.networkManager.GetNetwork(networkName)
+	networkConfig, err := c.NetworkManager.GetNetwork(networkName)
 	if err != nil {
 		return fmt.Errorf("failed to get network config: %v", err)
 	}
 
-	if c.containerIP == "" {
+	if c.ContainerIP == "" {
 		return fmt.Errorf("container IP not allocated")
 	}
 
@@ -163,7 +154,7 @@ func (c *Container) AttachNetwork() error {
 
 	out, err := exec.Command(
 		"ip", "link", "set",
-		c.peerName,
+		c.PeerName,
 		"netns",
 		strconv.Itoa(c.Pid),
 	).CombinedOutput()
@@ -185,13 +176,13 @@ func (c *Container) AttachNetwork() error {
 	}
 
 	maskSize, _ := ipNet.Mask.Size()
-	ipWithMask := fmt.Sprintf("%s/%d", c.containerIP, maskSize)
+	ipWithMask := fmt.Sprintf("%s/%d", c.ContainerIP, maskSize)
 
-	if err := nsenter("ip", "addr", "add", ipWithMask, "dev", c.peerName); err != nil {
+	if err := nsenter("ip", "addr", "add", ipWithMask, "dev", c.PeerName); err != nil {
 		return fmt.Errorf("failed to add IP: %v", err)
 	}
 
-	if err := nsenter("ip", "link", "set", c.peerName, "up"); err != nil {
+	if err := nsenter("ip", "link", "set", c.PeerName, "up"); err != nil {
 		return fmt.Errorf("failed to set eth up: %v", err)
 	}
 
@@ -204,8 +195,47 @@ func (c *Container) AttachNetwork() error {
 	}
 
 	time.Sleep(100 * time.Millisecond)
-	if err := nsenter("ip", "link", "show", c.peerName); err != nil {
+	if err := nsenter("ip", "link", "show", c.PeerName); err != nil {
 		return fmt.Errorf("eth verification failed: %v", err)
+	}
+
+	return nil
+}
+
+func (c *Container) CleanupNetwork() error {
+	if c.IP == "" {
+		return nil
+	}
+
+	if c.NetworkManager == nil {
+		nm, err := network.NewNetworkManager()
+		if err == nil {
+			c.NetworkManager = nm
+		}
+	}
+
+	if c.NetworkManager != nil {
+		ipam := network.NewIPAM(c.NetworkManager)
+		ipam.ReleaseIP(global.MainNetName, c.ID)
+	}
+
+	for _, port := range c.Ports {
+		parts := strings.Split(port, ":")
+		if len(parts) != 2 {
+			continue
+		}
+		hostPort, _ := strconv.Atoi(parts[0])
+		containerPort, _ := strconv.Atoi(parts[1])
+
+		if c.NetworkManager != nil {
+			network.RemovePortForward(strconv.Itoa(hostPort), c.IP, strconv.Itoa(containerPort))
+		} else {
+			network.RemovePortForward(parts[0], c.IP, parts[1])
+		}
+	}
+
+	if c.HostVeth != "" {
+		exec.Command("ip", "link", "del", c.HostVeth).Run()
 	}
 
 	return nil

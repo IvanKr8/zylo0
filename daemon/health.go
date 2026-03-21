@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"zylo/global"
 
 	"github.com/vishvananda/netlink"
 )
@@ -121,11 +122,11 @@ func checkNAT() int {
 }
 
 func checkSocket() int {
-	if _, err := os.Stat(SocketPath); err != nil {
+	if _, err := os.Stat(global.SocketPath); err != nil {
 		return 500
 	}
 
-	conn, err := net.DialTimeout("unix", SocketPath, 1*time.Second)
+	conn, err := net.DialTimeout(global.SocketNetworkType, global.SocketPath, 1*time.Second)
 	if err != nil {
 		return 500
 	}
@@ -135,7 +136,7 @@ func checkSocket() int {
 }
 
 func checkDaemon() int {
-	conn, err := net.DialTimeout("unix", SocketPath, 1*time.Second)
+	conn, err := net.DialTimeout(global.SocketNetworkType, global.SocketPath, 1*time.Second)
 	if err != nil {
 		return 500
 	}

@@ -7,11 +7,6 @@ import (
 	"syscall"
 )
 
-type MountManager struct {
-	rootfs string
-	mounts []*Mount
-}
-
 type Mount struct {
 	Source string
 	Target string
@@ -21,9 +16,14 @@ type Mount struct {
 	Create bool
 }
 
+type MountManager struct {
+	Rootfs string
+	mounts []*Mount
+}
+
 func NewMountManager(rootfs string) *MountManager {
 	return &MountManager{
-		rootfs: rootfs,
+		Rootfs: rootfs,
 		mounts: []*Mount{},
 	}
 }
@@ -42,7 +42,7 @@ func (m *MountManager) MountAll() error {
 }
 
 func (m *MountManager) Mount(mnt *Mount) error {
-	target := filepath.Join(m.rootfs, mnt.Target)
+	target := filepath.Join(m.Rootfs, mnt.Target)
 
 	if mnt.Create {
 		if err := os.MkdirAll(target, 0755); err != nil {
@@ -52,7 +52,7 @@ func (m *MountManager) Mount(mnt *Mount) error {
 
 	var source string
 	if mnt.Source != "" && !filepath.IsAbs(mnt.Source) {
-		source = filepath.Join(m.rootfs, mnt.Source)
+		source = filepath.Join(m.Rootfs, mnt.Source)
 	} else {
 		source = mnt.Source
 	}
@@ -66,7 +66,7 @@ func (m *MountManager) Mount(mnt *Mount) error {
 
 func (m *MountManager) UnmountAll() error {
 	for i := len(m.mounts) - 1; i >= 0; i-- {
-		target := filepath.Join(m.rootfs, m.mounts[i].Target)
+		target := filepath.Join(m.Rootfs, m.mounts[i].Target)
 		syscall.Unmount(target, 0)
 	}
 	return nil

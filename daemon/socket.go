@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"zylo/global"
 )
 
 func sockExists(socketPath string) (error, bool) {
@@ -33,7 +34,7 @@ func SockDelete(socketPath string) error {
 func sockCreate(socketPath string) (net.Listener, error) {
 	os.Remove(socketPath)
 
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := net.Listen(global.SocketNetworkType, socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create socket: %v", err)
 	}
@@ -42,7 +43,7 @@ func sockCreate(socketPath string) (net.Listener, error) {
 }
 
 func SockListener() (net.Listener, error) {
-	listener, err := net.Listen("unix", SocketPath)
+	listener, err := net.Listen(global.SocketNetworkType, global.SocketPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on socket: %v", err)
 	}

@@ -54,6 +54,7 @@ func (hm *HostsManager) AddContainer(ip, name string) error {
 	lines := strings.Split(string(content), "\n")
 	var newLines []string
 
+	// Remove existing entries with same name
 	for _, line := range lines {
 		if !strings.Contains(line, name) {
 			newLines = append(newLines, line)
@@ -62,6 +63,7 @@ func (hm *HostsManager) AddContainer(ip, name string) error {
 
 	newEntry := fmt.Sprintf("%s       %s", ip, name)
 
+	// Insert after the comment section
 	foundSection := false
 	for i, line := range newLines {
 		if strings.Contains(line, "# containers zylo-net") {
@@ -129,10 +131,4 @@ func (hm *HostsManager) UpdateAllContainers(containers map[string]ContainerInfo)
 	}
 
 	return nil
-}
-
-type ContainerInfo struct {
-	ID   string
-	Name string
-	IP   string
 }

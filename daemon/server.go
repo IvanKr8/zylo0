@@ -4,14 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"strings"
-
 	"zylo/image"
 	"zylo/internal/container"
-	"zylo/internal/system"
 )
 
-func daemon() error {
+func startServer() error {
 	fmt.Println("Zylo daemon starting...")
 
 	l, err := sockCreate(SocketPath)
@@ -21,7 +20,7 @@ func daemon() error {
 	}
 	defer l.Close()
 
-	if err := system.Chmod(SocketPath, 0777); err != nil {
+	if err := os.Chmod(SocketPath, 0777); err != nil {
 		fmt.Printf("Chmod error: %v\n", err)
 		return err
 	}
@@ -51,11 +50,9 @@ func router(conn net.Conn) {
 	command := strings.TrimSpace(string(buffer[:n]))
 
 	switch command {
-
 	case "ping":
 		conn.Write([]byte("pong"))
 		return
-
 	case "status":
 		conn.Write([]byte("ok"))
 		return
@@ -70,7 +67,6 @@ func router(conn net.Conn) {
 	}
 
 	switch da.Op {
-
 	case "UP":
 		if da.TTY == "" {
 			da.TTY = "/dev/stdout"
@@ -80,7 +76,6 @@ func router(conn net.Conn) {
 			conn.Write([]byte(err.Error() + "\n"))
 			return
 		}
-
 		conn.Write([]byte("Container started successfully\n"))
 
 	case "DOWN":
@@ -88,7 +83,6 @@ func router(conn net.Conn) {
 			conn.Write([]byte(err.Error() + "\n"))
 			return
 		}
-
 		conn.Write([]byte("Container stopped successfully\n"))
 
 	case "PS":

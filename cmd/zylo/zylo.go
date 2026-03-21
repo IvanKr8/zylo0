@@ -9,7 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"zylo/daemon"
+	"zylo/global"
 	"zylo/internal/system"
 )
 
@@ -33,7 +33,7 @@ func main() {
 		return
 	}
 
-	conn, err := net.Dial("unix", daemon.SocketPath)
+	conn, err := net.Dial(global.SocketNetworkType, global.SocketPath)
 	if err != nil {
 		os.Exit(1)
 	}
@@ -48,7 +48,6 @@ func main() {
 	}()
 
 	switch cmd {
-
 	case "up":
 		containerCfg := struct {
 			Op   string `json:"op"`
@@ -62,13 +61,11 @@ func main() {
 
 		data, _ := json.Marshal(containerCfg)
 		conn.Write(data)
-
 		io.Copy(os.Stdout, conn)
 
 	case "down":
 		downCmd := flag.NewFlagSet("down", flag.ExitOnError)
 		hash := downCmd.String("hash", "", "container hash")
-
 		downCmd.Parse(os.Args[2:])
 
 		containerCfg := struct {
@@ -85,7 +82,6 @@ func main() {
 
 		data, _ := json.Marshal(containerCfg)
 		conn.Write(data)
-
 		io.Copy(os.Stdout, conn)
 
 	case "ps":
@@ -99,14 +95,12 @@ func main() {
 
 		data, _ := json.Marshal(containerCfg)
 		conn.Write(data)
-
 		io.Copy(os.Stdout, conn)
 
 	case "logs":
 		logsCmd := flag.NewFlagSet("logs", flag.ExitOnError)
 		hash := logsCmd.String("hash", "", "container hash")
 		typeStr := logsCmd.String("type", "output", "container type (output or daemon)")
-
 		logsCmd.Parse(os.Args[2:])
 
 		if *typeStr != "output" && *typeStr != "daemon" {
@@ -131,7 +125,6 @@ func main() {
 
 		data, _ := json.Marshal(containerCfg)
 		conn.Write(data)
-
 		io.Copy(os.Stdout, conn)
 
 	case "volume":
@@ -157,14 +150,12 @@ func main() {
 
 			data, _ := json.Marshal(volumeCfg)
 			conn.Write(data)
-
 			io.Copy(os.Stdout, conn)
 
 		case "delete":
 			deleteCmd := flag.NewFlagSet("delete", flag.ExitOnError)
 			name := deleteCmd.String("name", "", "volume name")
 			path := deleteCmd.String("path", "", "volume path")
-
 			deleteCmd.Parse(os.Args[3:])
 
 			if *name == "" && *path == "" {
@@ -191,7 +182,6 @@ func main() {
 
 			data, _ := json.Marshal(volumeCfg)
 			conn.Write(data)
-
 			io.Copy(os.Stdout, conn)
 
 		default:
@@ -224,13 +214,11 @@ func main() {
 
 			data, _ := json.Marshal(imageCfg)
 			conn.Write(data)
-
 			io.Copy(os.Stdout, conn)
 
 		case "pull":
 			pullCmd := flag.NewFlagSet("pull", flag.ExitOnError)
 			name := pullCmd.String("name", "", "image name")
-
 			pullCmd.Parse(os.Args[3:])
 
 			if *name == "" {
@@ -251,13 +239,11 @@ func main() {
 
 			data, _ := json.Marshal(imageCfg)
 			conn.Write(data)
-
 			io.Copy(os.Stdout, conn)
 
 		case "delete":
 			deleteCmd := flag.NewFlagSet("delete", flag.ExitOnError)
 			name := deleteCmd.String("name", "", "image name")
-
 			deleteCmd.Parse(os.Args[3:])
 
 			if *name == "" {
@@ -278,7 +264,6 @@ func main() {
 
 			data, _ := json.Marshal(imageCfg)
 			conn.Write(data)
-
 			io.Copy(os.Stdout, conn)
 
 		default:

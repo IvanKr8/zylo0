@@ -18,4 +18,8 @@ const (
 
 	DnsPort      = ":53"
 	DnsExtraPort = ":54"
+
+	SocketPath        = "/var/run/zylo.sock"
+	SocketNetworkType = "unix"
+	DaemonPIDPath     = "/var/run/zylod.pid"
 )

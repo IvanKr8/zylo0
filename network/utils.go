@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
-	"strconv"
-	"strings"
 	"time"
 	"zylo/global"
 
@@ -23,23 +21,6 @@ func IsPortFree(port int) bool {
 	}
 	conn.Close()
 	return false
-}
-
-func ArePortsFree(ports []string) error {
-	for _, p := range ports {
-		parts := strings.Split(p, ":")
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid port format: %s", p)
-		}
-		hostPort, err := strconv.Atoi(parts[0])
-		if err != nil {
-			return fmt.Errorf("invalid host port: %s", parts[0])
-		}
-		if !IsPortFree(hostPort) {
-			return fmt.Errorf("host port %d is already in use", hostPort)
-		}
-	}
-	return nil
 }
 
 func (nm *NetManager) testNetwork(gateway string) error {
@@ -62,7 +43,19 @@ func (nm *NetManager) restoreNetwork(n *Net) error {
 		if err := netlink.LinkAdd(bridge); err != nil {
 			return err
 		}
-		addr, _ := netlink.ParseAddr(n.Gateway + "/24")
+	}
+
+	// Ensure IP is assigned
+	addr, _ := netlink.ParseAddr(n.Gateway + "/24")
+	addrs, _ := netlink.AddrList(bridge, netlink.FAMILY_V4)
+	hasIP := false
+	for _, a := range addrs {
+		if a.IPNet.String() == addr.IPNet.String() {
+			hasIP = true
+			break
+		}
+	}
+	if !hasIP {
 		_ = netlink.AddrAdd(bridge, addr)
 	}
 

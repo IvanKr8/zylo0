@@ -20,7 +20,7 @@ func (nm *NetManager) CreateNetwork(name string) (*Net, error) {
 		Gateway: gateway,
 	}
 
-	netInfo.DNS = dns.NewDNS(netInfo.Gateway+":53", func(name string) (string, bool) {
+	netInfo.DNS = dns.NewDNS(netInfo.Gateway+global.DnsPort, func(name string) (string, bool) {
 		for _, ctr := range netInfo.Containers {
 			if ctr.Name == name {
 				return ctr.IP, true

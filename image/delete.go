@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
 	"zylo/global"
 	"zylo/internal/container"
 )
@@ -14,9 +13,9 @@ func Delete(tty, name string) error {
 		return fmt.Errorf("image name required")
 	}
 
-	ttyFile, err := os.OpenFile(tty, os.O_WRONLY, 0644)
+	ttyFile, err := openTTY(tty)
 	if err != nil {
-		return fmt.Errorf("failed to open tty: %v", err)
+		return err
 	}
 	defer ttyFile.Close()
 

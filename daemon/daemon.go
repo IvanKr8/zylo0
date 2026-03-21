@@ -6,12 +6,13 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"zylo/global"
 	"zylo/network"
 )
 
 var (
-	pidFl      = "/var/run/zylod.pid"
-	SocketPath = "/var/run/zylo-socket.sock"
+	SocketPath = global.SocketPath
+	pidFl      = global.DaemonPIDPath
 )
 
 type daemonAction struct {
@@ -33,7 +34,7 @@ func Up() error {
 		return err
 	}
 
-	initCleanUp()
+	InitCleanUp()
 
 	if err := nm.EnsureDefaultNetwork(); err != nil {
 		log.Fatal(err)
@@ -54,7 +55,7 @@ func Up() error {
 		return fmt.Errorf("error to create a file with daemon PID: %v", err)
 	}
 
-	if err := daemon(); err != nil {
+	if err := startServer(); err != nil {
 		return err
 	}
 
@@ -93,11 +94,11 @@ func Down() error {
 	return nil
 }
 
-func Status() (string, error) {
-	conn, err := net.Dial("unix", SocketPath)
+func Status() error {
+	conn, err := net.Dial(global.SocketNetworkType, SocketPath)
 	if err != nil {
 		fmt.Println("FAIL")
-		return "", fmt.Errorf("error dialing socket: %v", err)
+		return fmt.Errorf("error dialing socket: %v", err)
 	}
 	defer conn.Close()
 
@@ -105,22 +106,22 @@ func Status() (string, error) {
 	_, err = conn.Write([]byte(message))
 	if err != nil {
 		fmt.Println("FAIL")
-		return "", fmt.Errorf("error sending ping: %v", err)
+		return fmt.Errorf("error sending ping: %v", err)
 	}
 
 	buffer := make([]byte, 1024)
 	n, err := conn.Read(buffer)
 	if err != nil {
 		fmt.Println("FAIL")
-		return "", fmt.Errorf("error sending ping: %v", err)
+		return fmt.Errorf("error sending ping: %v", err)
 	}
 
 	response := string(buffer[:n])
 	if response == "ok" {
 		fmt.Println("OK")
-		return "ok", nil
+		return nil
 	}
 
 	fmt.Println("FAIL")
-	return "", fmt.Errorf("error sending status OK: response: %v", response)
+	return fmt.Errorf("error sending status OK: response: %v", response)
 }
